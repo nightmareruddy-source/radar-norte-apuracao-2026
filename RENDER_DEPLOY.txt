@@ -1,0 +1,7 @@
+RADAR NORTE — DEPLOY INICIAL SEGURO
+Runtime: Python
+Build command: python -m py_compile radar_norte.py auditar_tse.py
+Start command: python radar_norte.py --mock --host 0.0.0.0 --port $PORT --refresh 300
+
+IMPORTANTE: este start command mantém o serviço em MOCK/TESTE.
+Não remover --mock até a coleta real do TSE ser validada.

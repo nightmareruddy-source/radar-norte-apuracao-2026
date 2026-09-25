@@ -1,0 +1,215 @@
+{
+  "source": "TSE Simulado 2026",
+  "uf": "pr",
+  "election_code": "21272",
+  "cargo_code": "0007",
+  "municipality_config_url": "https://resultados-sim.tse.jus.br/simulado/simulado2026/ele2026/21270/config/mun-e021270-cm.json",
+  "endpoint_template": "https://resultados-sim.tse.jus.br/simulado/simulado2026/ele2026/21272/dados/pr/pr{code}-c0007-e021272-u.json",
+  "municipalities": [
+    [
+      "Ibiporã",
+      "75914"
+    ],
+    [
+      "Londrina",
+      "76678"
+    ],
+    [
+      "Cambé",
+      "74713"
+    ],
+    [
+      "Rolândia",
+      "78255"
+    ],
+    [
+      "Jataizinho",
+      "76473"
+    ],
+    [
+      "Sertanópolis",
+      "79057"
+    ],
+    [
+      "Bela Vista do Paraíso",
+      "74535"
+    ],
+    [
+      "Tamarana",
+      "75663"
+    ],
+    [
+      "Primeiro de Maio",
+      "77895"
+    ],
+    [
+      "Alvorada do Sul",
+      "74136"
+    ],
+    [
+      "Assaí",
+      "74373"
+    ],
+    [
+      "São Sebastião da Amoreira",
+      "78956"
+    ],
+    [
+      "Nova América da Colina",
+      "77178"
+    ],
+    [
+      "Cornélio Procópio",
+      "75256"
+    ],
+    [
+      "Bandeirantes",
+      "74454"
+    ],
+    [
+      "Santa Mariana",
+      "78530"
+    ],
+    [
+      "Andirá",
+      "74195"
+    ],
+    [
+      "Cambará",
+      "74691"
+    ],
+    [
+      "Jacarezinho",
+      "76295"
+    ],
+    [
+      "Santo Antônio da Platina",
+      "78590"
+    ],
+    [
+      "Ribeirão Claro",
+      "78131"
+    ],
+    [
+      "Ribeirão do Pinhal",
+      "78158"
+    ],
+    [
+      "Joaquim Távora",
+      "76490"
+    ],
+    [
+      "Carlópolis",
+      "74918"
+    ],
+    [
+      "Wenceslau Braz",
+      "79430"
+    ],
+    [
+      "Siqueira Campos",
+      "79073"
+    ],
+    [
+      "Arapongas",
+      "74276"
+    ],
+    [
+      "Apucarana",
+      "74250"
+    ],
+    [
+      "Sabáudia",
+      "78310"
+    ],
+    [
+      "Astorga",
+      "74390"
+    ],
+    [
+      "Jaguapitã",
+      "76317"
+    ],
+    [
+      "Porecatu",
+      "77798"
+    ],
+    [
+      "Florestópolis",
+      "75574"
+    ],
+    [
+      "Miraselva",
+      "77054"
+    ],
+    [
+      "Centenário do Sul",
+      "74993"
+    ],
+    [
+      "Guaraci",
+      "75795"
+    ],
+    [
+      "Sertaneja",
+      "79030"
+    ],
+    [
+      "Uraí",
+      "79413"
+    ],
+    [
+      "Leópolis",
+      "76619"
+    ],
+    [
+      "Rancho Alegre",
+      "78034"
+    ],
+    [
+      "Nova Fátima",
+      "77232"
+    ],
+    [
+      "Congonhinhas",
+      "75175"
+    ],
+    [
+      "Abatiá",
+      "74012"
+    ],
+    [
+      "Itambaracá",
+      "76139"
+    ],
+    [
+      "Barra do Jacaré",
+      "74519"
+    ],
+    [
+      "Jundiaí do Sul",
+      "76511"
+    ],
+    [
+      "Salto do Itararé",
+      "78352"
+    ],
+    [
+      "Tomazina",
+      "79294"
+    ],
+    [
+      "Quatiguá",
+      "77933"
+    ],
+    [
+      "Pinhalão",
+      "77631"
+    ]
+  ],
+  "candidate_number": "70255",
+  "candidate_name": "Rafael Eik Ferreira",
+  "request_interval_seconds": 2.5,
+  "environment": "SIMULADO_TSE_2026",
+  "refresh_seconds": 60
+}
