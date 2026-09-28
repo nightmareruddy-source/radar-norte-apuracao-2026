@@ -1,0 +1,16 @@
+{
+  "ambiente": "SIMULADO_TSE_2026",
+  "esperados": 50,
+  "consultados": 50,
+  "ea12": {
+    "estado": "VALIDO",
+    "erro": "",
+    "sha256": "616bb78c722c1b0507322225ec8e77f1180039dc9034ab1b8d73fa90672e3ffa",
+    "confirmados": 50,
+    "divergencias": []
+  },
+  "estados": {
+    "CANDIDATO_AUSENTE": 50
+  },
+  "completo": true
+}
