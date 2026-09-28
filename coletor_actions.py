@@ -5,6 +5,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import tempfile
 import time
 import unicodedata
@@ -33,13 +34,15 @@ def request(url, timeout=25):
         return response.status, response.read()
 
 
-def parse_result(body, code, number):
+def parse_result(body, code, number, election=None):
     try:
         data = json.loads(body)
     except (ValueError, UnicodeError) as exc:
         raise ValueError('JSON_INVALIDO') from exc
     if not isinstance(data, dict) or str(data.get('cdabr', '')) != str(code):
         raise ValueError('MUNICIPIO_DIVERGENTE')
+    if election is not None and str(data.get('ele','')) != str(election):
+        raise ValueError('ELEICAO_DIVERGENTE')
     cargos = data.get('carg')
     if not isinstance(cargos, list):
         raise ValueError('SCHEMA_DIVERGENTE')
@@ -62,6 +65,8 @@ def parse_result(body, code, number):
             for cand in par['cand']:
                 if not isinstance(cand, dict):
                     raise ValueError('SCHEMA_DIVERGENTE')
+                if not re.fullmatch(r'[0-9]+',str(cand.get('n',''))):
+                    raise ValueError('SCHEMA_DIVERGENTE')
                 if str(cand.get('n', '')).strip() == number:
                     candidates.append((cand, par.get('sg', '')))
     if not party_count:
@@ -72,7 +77,7 @@ def parse_result(body, code, number):
         raise ValueError('CANDIDATO_DUPLICADO')
     cand, party = candidates[0]
     votes = cand.get('vap')
-    if isinstance(votes, bool) or not str(votes).isdigit():
+    if isinstance(votes, bool) or not re.fullmatch(r'[0-9]+',str(votes)):
         raise ValueError('VOTOS_INVALIDOS')
     return 'DADO_VALIDO', int(votes), cand.get('nmu') or cand.get('nm') or '', party
 
@@ -161,7 +166,7 @@ def audit(limit=50, transport=request, interval=None, out=OUT):
                     row['estado'] = f'HTTP_{status}'
                 else:
                     state, votes, candidate, party = parse_result(
-                        body, code, str(CFG['candidate_number']))
+                        body, code, str(CFG['candidate_number']), CFG['election_code'])
                     row.update(estado=state, votos=votes if votes is not None else '',
                                candidato=candidate, partido=party)
             except urllib.error.HTTPError as exc:

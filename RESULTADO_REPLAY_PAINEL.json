@@ -1,0 +1,21 @@
+{
+  "tipo": "REPLAY_DOS_50_JSONS_OFICIAIS_COLETADOS_28_09_2026",
+  "chamadas": 50,
+  "municipios": 50,
+  "ausentes": 50,
+  "votos_nulos": 50,
+  "dados_validos": 0,
+  "raw_criado": false,
+  "coleta": {
+    "timestamp": "2026-09-28T21:20:31+02:00",
+    "esperados": 50,
+    "consultados": 50,
+    "respostas_validas": 50,
+    "limite_minimo": 50,
+    "bloqueada": false,
+    "motivos": [],
+    "municipios_atualizados": [],
+    "dados_validos_guardados": 0,
+    "snapshot_publicado": false
+  }
+}

@@ -8,7 +8,7 @@ import coletor_actions as c
 
 
 def result(code, candidates):
-    return json.dumps({'cdabr': code, 'carg': [
+    return json.dumps({'ele':c.CFG['election_code'], 'cdabr': code, 'carg': [
         {'cd': '7', 'agr': [{'par': [{'sg': 'AVANTE', 'cand': candidates}]}]}]}
     ).encode()
 

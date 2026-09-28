@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Radar Norte 2026</title>
+<style>
+body{font-family:system-ui;margin:20px;background:#f5f5f5;color:#202020}
+h1{margin-bottom:4px}.card{background:white;padding:16px;border-radius:12px;margin:12px 0;box-shadow:0 1px 5px #ccc}
+table{width:100%;border-collapse:collapse;background:white}th,td{padding:10px;border-bottom:1px solid #ddd;text-align:left;font-size:13px}
+th{position:sticky;top:0;background:#eee}.wrap{overflow:auto;max-height:70vh}.preservado{background:#fff4cf}
+.alerta{color:#8c3600;font-weight:600}.nota{font-size:14px;color:#555}#status{display:block;margin-top:10px}
+</style>
+</head>
+<body>
+<h1>Radar Norte — Apuração 2026</h1>
+<div class="card"><b>Ambiente:</b> __ENV__ — DADOS DE TESTE, NÃO É PRODUÇÃO<br>
+<b>Cargo:</b> Deputado Estadual (7)<br><b>Número monitorado:</b> __NUMERO__<br><b>Municípios:</b> <span id="total">50</span>
+<span id="status" role="status">Carregando…</span></div>
+<p class="nota">Os votos exibidos são o último dado validado de cada município. “Preservado” indica que a última coleta não atualizou esse dado. Ausência do candidato ou falha não significa zero voto.</p>
+<div class="wrap"><table><thead><tr>
+<th>Município</th><th>Última tentativa</th><th>HTTP</th><th>Votos confirmados</th><th>Situação do dado</th><th>Último dado válido</th><th>Atualização do TSE</th>
+</tr></thead><tbody id="tb"></tbody></table></div>
+<script>
+function td(value){const e=document.createElement('td');e.textContent=value==null?'—':String(value);return e}
+const labels={DADO_VALIDO:'Candidato presente',CANDIDATO_AUSENTE_NO_SIMULADO:'Candidato ausente no simulado',
+ERRO_COLETA:'Falha de coleta',JSON_INVALIDO:'JSON inválido',SCHEMA_DIVERGENTE:'Formato divergente',
+MUNICIPIO_DIVERGENTE:'Município divergente',CARGO_DIVERGENTE:'Cargo divergente',VOTOS_INVALIDOS:'Votos inválidos',
+ELEICAO_DIVERGENTE:'Eleição divergente',
+CANDIDATO_DUPLICADO:'Candidato duplicado',NAO_CONSULTADO:'Não consultado'};
+function date(value){return value?new Date(value).toLocaleString('pt-BR'):'—'}
+function render(d){
+ const s=d.coleta||{};
+ document.querySelector('#total').textContent=s.esperados||50;
+ const status=document.querySelector('#status');
+ status.className=s.bloqueada?'alerta':'';
+ status.textContent='Última coleta: '+date(d.timestamp)+' | '+(s.consultados||0)+'/'+(s.esperados||50)+' consultados | '+
+ (s.bloqueada?'Atualização bloqueada; dados anteriores preservados.':(s.municipios_atualizados||[]).length+' municípios com votos atualizados.');
+ const tb=document.querySelector('#tb');tb.replaceChildren();
+ for(const x of d.municipios){
+  const tr=document.createElement('tr');if(x.preservado)tr.className='preservado';
+  const state=x.votos==null?'Sem dado válido':x.preservado?'Preservado':'Atualizado';
+  tr.append(td(x.municipio),td(labels[x.estado_tentativa]||x.estado_tentativa),td(x.http),
+   td(x.votos),td(state),td(date(x.dado_valido_em)),td(x.atualizacao_tse||null));tb.appendChild(tr);
+ }
+}
+async function go(){try{
+ const r=await fetch('/api/latest',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);
+ render(await r.json());
+}catch(e){const s=document.querySelector('#status');s.className='alerta';s.textContent='Sem conexão com o painel. A tabela pode estar desatualizada.'}}
+go();setInterval(go,10000);
+</script>
+</body></html>

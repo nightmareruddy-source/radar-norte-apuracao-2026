@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-import argparse, csv, json, os, sqlite3, tempfile, threading, time, unicodedata, urllib.request, urllib.error
+import argparse, csv, html as html_escape, json, os, sqlite3, tempfile, threading, time, unicodedata, urllib.request, urllib.error
+from coletor_actions import parse_result, atomic_json
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -8,13 +9,16 @@ BASE=Path(__file__).resolve().parent
 CFG=json.loads((BASE/'config.json').read_text(encoding='utf-8'))
 REAL_DATA=BASE/'data'; MOCK_DATA=BASE/'data_mock'
 DATA=REAL_DATA; DB=None; LATEST=None; HIST=None
+ATTEMPTS=None; VALID=None; STATUS=None
+STATE_LOCK=threading.RLock()
 URL=CFG['endpoint_template']
 
 def select_data_dir(mock=False):
-    global DATA,DB,LATEST,HIST
+    global DATA,DB,LATEST,HIST,ATTEMPTS,VALID,STATUS
     DATA=MOCK_DATA if mock else REAL_DATA
     DATA.mkdir(exist_ok=True)
     DB=DATA/'radar.sqlite3'; LATEST=DATA/'raw_atual.csv'; HIST=DATA/'historico_apuracao.csv'
+    ATTEMPTS=DATA/'ultima_tentativa.csv'; VALID=DATA/'ultimo_dado_valido.csv'; STATUS=DATA/'estado_coleta.json'
 FIELDS=['timestamp','municipio','codigo_municipio','http','json_valido','municipio_confere','cargo7_confere','schema_confere','candidato_presente','candidato','numero','partido','votos','pct_candidato','dg','hg','tf','estado','source_url','erro']
 
 def norm(s):
@@ -32,7 +36,9 @@ def fetch(url,timeout=20):
     req=urllib.request.Request(url,headers={'User-Agent':'RadarNorte2026/1.0','Accept':'application/json'})
     try:
         with urllib.request.urlopen(req,timeout=timeout) as r:
-            raw=r.read(); return r.status,json.loads(raw.decode('utf-8-sig')),''
+            raw=r.read()
+            try: return r.status,json.loads(raw.decode('utf-8-sig')),''
+            except (ValueError,UnicodeError): return r.status,None,'JSON_INVALIDO'
     except urllib.error.HTTPError as e: return e.code,None,f'HTTP {e.code}'
     except Exception as e: return 0,None,f'{type(e).__name__}: {e}'
 
@@ -55,28 +61,28 @@ def extract_candidates(cargo):
 
 def parse_one(mun,code,payload,http=200,err=''):
     row={k:'' for k in FIELDS}; row.update(timestamp=now(),municipio=mun,codigo_municipio=code,http=http,source_url=URL.format(code=code),erro=err)
-    if not isinstance(payload,dict): row['estado']='ERRO_COLETA' if err else 'JSON_INVALIDO'; return row
+    if http != 200:
+        row['estado']=f'HTTP_{http}' if http else 'ERRO_COLETA'; return row
+    if err or not isinstance(payload,dict):
+        row['estado']='JSON_INVALIDO' if err == 'JSON_INVALIDO' or not err else 'ERRO_COLETA'; return row
     row['json_valido']='SIM'
-    cdabr=str(payload.get('cdabr') or payload.get('cd') or '')
-    row['municipio_confere']='SIM' if (not cdabr or cdabr==str(code)) else 'NÃO'
-    cargo=find_cargo7(payload); row['cargo7_confere']='SIM' if cargo else 'NÃO'
-    if not cargo: row['estado']='CARGO_DIVERGENTE'; return row
-    cands=extract_candidates(cargo); row['schema_confere']='SIM' if cands else 'NÃO'
+    row['municipio_confere']='SIM' if str(payload.get('cdabr',''))==str(code) else 'NÃO'
     row['dg']=payload.get('dg',''); row['hg']=payload.get('hg',''); row['tf']=payload.get('tf','')
-    if not cands: row['estado']='SCHEMA_DIVERGENTE'; return row
     target=str(CFG.get('candidate_number','70255'))
-    hit=None; party=''
-    for c,p in cands:
-        if str(c.get('n','')).strip()==target: hit=c; party=p; break
-    if hit:
-        row.update(candidato_presente='SIM',candidato=hit.get('nm') or hit.get('nmu') or '',numero=target,partido=party,votos=hit.get('vap',''),pct_candidato=hit.get('pvap',''),estado='DADO_VALIDO')
-    else:
-        # Important: absence in synthetic simulation is not converted to zero votes.
-        row.update(candidato_presente='NÃO',numero=target,estado='CANDIDATO_AUSENTE_NO_SIMULADO')
+    try:
+        state,votes,name,party=parse_result(json.dumps(payload).encode(),str(code),target,CFG['election_code'])
+    except ValueError as exc:
+        row.update(estado=str(exc),erro=str(exc)); return row
+    row.update(cargo7_confere='SIM',schema_confere='SIM',numero=target)
+    if state=='DADO_VALIDO':
+        hit=next(c for c,p in extract_candidates(find_cargo7(payload)) if str(c.get('n','')).strip()==target)
+        row.update(candidato_presente='SIM',candidato=name,partido=party,votos=votes,
+                   pct_candidato=hit.get('pvap',''),estado=state)
+    else: row.update(candidato_presente='NÃO',estado='CANDIDATO_AUSENTE_NO_SIMULADO')
     return row
 
 def mock_payload(mun,code):
-    return {'cdabr':str(code),'dg':'22/09/2026','hg':'15:00:00','tf':'n','carg':[{'cd':'7','agr':[{'par':[{'sg':'FICT','cand':[{'n':'99999','nm':'CANDIDATO FICTÍCIO','vap':'123','pvap':'1,23'}]}]}]}]}
+    return {'ele':CFG['election_code'],'cdabr':str(code),'dg':'22/09/2026','hg':'15:00:00','tf':'n','carg':[{'cd':'7','agr':[{'par':[{'sg':'FICT','cand':[{'n':'99999','nm':'CANDIDATO FICTÍCIO','vap':'123','pvap':'1,23'}]}]}]}]}
 
 def atomic_write_csv(path, rows):
     """Write a complete CSV and atomically replace the previous snapshot.
@@ -98,11 +104,54 @@ def atomic_write_csv(path, rows):
         raise
 
 def save(rows):
-    # History always records what was observed. Latest is only replaced by a complete 50-row cycle,
-    # preventing a blocked/partial request from destroying the last complete snapshot.
-    publish_latest = len(rows) == len(CFG['municipalities'])
-    if publish_latest:
-        atomic_write_csv(LATEST, rows)
+    with STATE_LOCK:
+        return _save(rows)
+
+def read_csv(path):
+    if not path.exists(): return []
+    with path.open(encoding='utf-8-sig') as stream: return list(csv.DictReader(stream))
+
+def municipalities():
+    return [(x[0],str(x[1])) if isinstance(x,(list,tuple)) else (x['name'],str(x['code'])) for x in CFG['municipalities']]
+
+def ensure_context():
+    context={key:CFG.get(key) for key in ('environment','election_code','cargo_code','candidate_number','endpoint_template')}
+    context['municipalities']=[list(x) for x in municipalities()]
+    path=DATA/'contexto_validacao.json'
+    if path.exists():
+        if json.loads(path.read_text(encoding='utf-8'))!=context:
+            raise ValueError('Configuração mudou: use uma pasta de dados separada para este contexto')
+    elif VALID.exists():
+        raise ValueError('Dados validados sem identificação do contexto; mantenha-os isolados')
+    else: atomic_json(path,context)
+
+def _save(rows):
+    ensure_context()
+    expected={code for name,code in municipalities()}
+    if len(expected)!=len(CFG['municipalities']): raise ValueError('Códigos municipais duplicados na configuração')
+    codes=[str(r['codigo_municipio']) for r in rows]
+    if len(set(codes))!=len(codes) or not set(codes)<=expected:
+        raise ValueError('Municípios duplicados ou não configurados no ciclo')
+    acceptable={'DADO_VALIDO','CANDIDATO_AUSENTE_NO_SIMULADO'}
+    schema_errors={'JSON_INVALIDO','SCHEMA_DIVERGENTE','CARGO_DIVERGENTE','MUNICIPIO_DIVERGENTE','ELEICAO_DIVERGENTE','CANDIDATO_DUPLICADO','VOTOS_INVALIDOS'}
+    good=sum(r['estado'] in acceptable for r in rows)
+    threshold=int(CFG.get('min_municipios_ok_to_overwrite',len(expected)))
+    if not 1<=threshold<=len(expected): raise ValueError('Limite de municípios válidos inválido')
+    reasons=[]
+    if set(codes)!=expected: reasons.append('CICLO_INCOMPLETO')
+    if good<threshold: reasons.append('MUNICIPIOS_VALIDOS_INSUFICIENTES')
+    if any(r['estado'] in schema_errors for r in rows): reasons.append('FORMATO_OU_CONTEUDO_DIVERGENTE')
+    if any(r['estado'] in ('HTTP_403','HTTP_429') for r in rows): reasons.append('ACESSO_BLOQUEADO')
+    allowed=not reasons
+    # The old snapshot remains on disk. Only this version's validated store feeds the panel.
+    previous={r['codigo_municipio']:r for r in read_csv(VALID)}
+    updated=[]
+    if allowed:
+        for r in rows:
+            if r['estado']=='DADO_VALIDO':
+                previous[str(r['codigo_municipio'])]=r; updated.append(str(r['codigo_municipio']))
+    valid_rows=[previous[code] for name,code in municipalities() if code in previous]
+    publish_latest=allowed and len(valid_rows)==len(expected) and bool(updated)
     new=not HIST.exists()
     with HIST.open('a',newline='',encoding='utf-8-sig') as f:
         w=csv.DictWriter(f,fieldnames=FIELDS)
@@ -114,13 +163,20 @@ def save(rows):
             try: v=int(r['votos']) if str(r['votos']).strip() else None
             except: pass
             c.execute('insert into snapshots(timestamp,municipio,codigo,estado,votos,payload) values(?,?,?,?,?,?)',(r['timestamp'],r['municipio'],r['codigo_municipio'],r['estado'],v,json.dumps(r,ensure_ascii=False)))
+    atomic_write_csv(ATTEMPTS,rows)
+    if allowed and updated: atomic_write_csv(VALID,valid_rows)
+    if publish_latest: atomic_write_csv(LATEST,valid_rows)
+    atomic_json(STATUS,{'timestamp':now(),'esperados':len(expected),'consultados':len(rows),
+                       'respostas_validas':good,'limite_minimo':threshold,'bloqueada':not allowed,
+                       'motivos':reasons,'municipios_atualizados':updated,
+                       'dados_validos_guardados':len(valid_rows),'snapshot_publicado':publish_latest})
     return publish_latest
 
 def cycle(mock=False):
     select_data_dir(mock)
     init_db()
     rows=[]
-    for item in CFG['municipalities']:
+    for index,item in enumerate(CFG['municipalities']):
         if isinstance(item, (list, tuple)):
             mun, code = item[0], str(item[1])
         else:
@@ -131,35 +187,56 @@ def cycle(mock=False):
         if not mock and status in (403,429):
             # Stop safely; never fill remaining municipalities with zero.
             break
-        if not mock: time.sleep(max(2.5,float(CFG.get('request_interval_seconds',2.5))))
+        if not mock and index<len(CFG['municipalities'])-1: time.sleep(max(2.5,float(CFG.get('request_interval_seconds',2.5))))
     save(rows); return rows
 
 def latest_rows():
-    if not LATEST.exists(): return []
-    with LATEST.open(encoding='utf-8-sig') as f: return list(csv.DictReader(f))
+    return read_csv(LATEST)
+
+def api_state():
+    with STATE_LOCK:
+        ensure_context()
+        attempts={r['codigo_municipio']:r for r in read_csv(ATTEMPTS)}
+        valid=read_csv(VALID)
+        saved={r['codigo_municipio']:r for r in valid}
+        status=json.loads(STATUS.read_text(encoding='utf-8')) if STATUS.exists() else {}
+        display=[]
+        for name,code in municipalities():
+            attempt=attempts.get(code,{})
+            last=saved.get(code,{})
+            fresh=code in status.get('municipios_atualizados',[]) and not status.get('bloqueada',False)
+            display.append({'municipio':name,'codigo_municipio':code,
+                            'estado_tentativa':attempt.get('estado','NAO_CONSULTADO'),
+                            'http':attempt.get('http',''),'tentativa_em':attempt.get('timestamp'),
+                            'votos':int(last['votos']) if last else None,
+                            'dado_valido_em':last.get('timestamp'),
+                            'candidato':last.get('candidato',''),
+                            'preservado':bool(last) and not fresh,
+                            'atualizacao_tse':(' '.join([last.get('dg',''),last.get('hg','')])).strip()})
+        return {'timestamp':status.get('timestamp'),'rows':valid,'tentativas':list(attempts.values()),
+                'coleta':status,'municipios':display}
 
 def html():
-    env=CFG.get('environment','SIMULADO_TSE_2026')
-    page='''<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Radar Norte 2026</title><style>body{font-family:system-ui;margin:20px;background:#f5f5f5}h1{margin-bottom:4px}.card{background:white;padding:16px;border-radius:12px;margin:12px 0;box-shadow:0 1px 5px #ccc}.ok{font-weight:700}table{width:100%;border-collapse:collapse;background:white}th,td{padding:8px;border-bottom:1px solid #ddd;text-align:left;font-size:13px}th{position:sticky;top:0;background:#eee}.wrap{overflow:auto;max-height:70vh}button{padding:10px 14px}</style></head><body><h1>Radar Norte — Apuração 2026</h1><div class="card"><b>Ambiente:</b> __ENV__ — DADOS DE TESTE, NÃO É PRODUÇÃO<br><b>Cargo:</b> Deputado Estadual (7)<br><b>Municípios:</b> 50<br><span id="status">Carregando…</span></div><div class="wrap"><table><thead><tr><th>Município</th><th>Estado</th><th>HTTP</th><th>Candidato</th><th>Votos</th><th>Atualização</th></tr></thead><tbody id="tb"></tbody></table></div><script>function td(v){const e=document.createElement('td');e.textContent=v==null?'':String(v);return e}async function go(){let r=await fetch('/api/latest',{cache:'no-store'});let d=await r.json();document.querySelector('#status').textContent='Última leitura: '+(d.timestamp||'sem coleta')+' | '+d.rows.length+'/50 registros';const tb=document.querySelector('#tb');tb.replaceChildren();for(const x of d.rows){const tr=document.createElement('tr');tr.append(td(x.municipio),td(x.estado),td(x.http),td(x.candidato_presente||''),td(x.votos||'—'),td((x.dg||'')+' '+(x.hg||'')));tb.appendChild(tr)}}go();setInterval(go,10000)</script></body></html>'''
-    return page.replace('__ENV__', env)
+    page=(BASE/'painel.html').read_text(encoding='utf-8')
+    return page.replace('__ENV__',html_escape.escape(CFG.get('environment','SIMULADO_TSE_2026'))).replace('__NUMERO__',html_escape.escape(str(CFG['candidate_number'])))
 
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path=='/' or self.path.startswith('/index'):
             b=html().encode(); typ='text/html; charset=utf-8'
         elif self.path.startswith('/api/latest'):
-            rows=latest_rows(); b=json.dumps({'timestamp':rows[0]['timestamp'] if rows else None,'rows':rows},ensure_ascii=False).encode(); typ='application/json; charset=utf-8'
+            b=json.dumps(api_state(),ensure_ascii=False).encode(); typ='application/json; charset=utf-8'
         else: self.send_response(404); self.end_headers(); return
         self.send_response(200); self.send_header('Content-Type',typ); self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.send_header('Content-Length',str(len(b))); self.end_headers(); self.wfile.write(b)
     def log_message(self,*a): pass
 
 def serve(host,port,mock,refresh):
-    select_data_dir(mock); init_db(); cycle(mock)
+    select_data_dir(mock); init_db()
     def worker():
         while True:
-            time.sleep(refresh)
             try: cycle(mock)
             except Exception as e: print('coleta:',e,flush=True)
+            time.sleep(refresh)
     threading.Thread(target=worker,daemon=True).start()
     shown_host='127.0.0.1' if host in ('127.0.0.1','localhost') else host
     print(f'Radar Norte ativo em http://{shown_host}:{port} | mock={mock} | refresh={refresh}s',flush=True)
