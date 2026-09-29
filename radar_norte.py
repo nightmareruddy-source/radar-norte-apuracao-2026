@@ -81,6 +81,23 @@ def parse_one(mun,code,payload,http=200,err=''):
     else: row.update(candidato_presente='NÃO',estado='CANDIDATO_AUSENTE_NO_SIMULADO')
     return row
 
+def indicators(payload):
+    """Optional section counts; invalid or missing values remain unknown."""
+    def integer(x):
+        text=str(x)
+        return int(text) if text.isascii() and text.isdigit() else None
+    sec=payload.get('s',{}) if isinstance(payload,dict) else {}
+    votes=payload.get('v',{}) if isinstance(payload,dict) else {}
+    sec=sec if isinstance(sec,dict) else {}
+    votes=votes if isinstance(votes,dict) else {}
+    total,done=integer(sec.get('ts')),integer(sec.get('st'))
+    if total is None or done is None or total<=0 or done>total:
+        total=done=None
+    return {'secoes_total':total,'secoes_totalizadas':done,
+            'percentual_secoes':round(100*done/total,2) if total else None,
+            'votos_validos':integer(votes.get('vv')),
+            'apuracao':'SECOES_TOTALIZADAS' if total and done==total else 'PARCIAL' if total else 'INDEFINIDO'}
+
 def mock_payload(mun,code):
     return {'ele':CFG['election_code'],'cdabr':str(code),'dg':'22/09/2026','hg':'15:00:00','tf':'n','carg':[{'cd':'7','agr':[{'par':[{'sg':'FICT','cand':[{'n':'99999','nm':'CANDIDATO FICTÍCIO','vap':'123','pvap':'1,23'}]}]}]}]}
 
@@ -175,7 +192,7 @@ def _save(rows):
 def cycle(mock=False):
     select_data_dir(mock)
     init_db()
-    rows=[]
+    rows=[]; metrics={}
     for index,item in enumerate(CFG['municipalities']):
         if isinstance(item, (list, tuple)):
             mun, code = item[0], str(item[1])
@@ -184,11 +201,16 @@ def cycle(mock=False):
         if mock: status,payload,err=200,mock_payload(mun,code),''
         else: status,payload,err=fetch(URL.format(code=code))
         row=parse_one(mun,code,payload,status,err); rows.append(row)
+        if row['estado'] in ('DADO_VALIDO','CANDIDATO_AUSENTE_NO_SIMULADO'):
+            metrics[code]={'tentativa_em':row['timestamp'],**indicators(payload)}
         if not mock and status in (403,429):
             # Stop safely; never fill remaining municipalities with zero.
             break
         if not mock and index<len(CFG['municipalities'])-1: time.sleep(max(2.5,float(CFG.get('request_interval_seconds',2.5))))
-    save(rows); return rows
+    with STATE_LOCK:
+        save(rows)
+        atomic_json(DATA/'indicadores_municipais.json',metrics)
+    return rows
 
 def latest_rows():
     return read_csv(LATEST)
@@ -200,12 +222,16 @@ def api_state():
         valid=read_csv(VALID)
         saved={r['codigo_municipio']:r for r in valid}
         status=json.loads(STATUS.read_text(encoding='utf-8')) if STATUS.exists() else {}
+        metric_path=DATA/'indicadores_municipais.json'
+        metrics=json.loads(metric_path.read_text()) if metric_path.exists() else {}
         display=[]
         for name,code in municipalities():
             attempt=attempts.get(code,{})
             last=saved.get(code,{})
             fresh=code in status.get('municipios_atualizados',[]) and not status.get('bloqueada',False)
-            display.append({'municipio':name,'codigo_municipio':code,
+            metric=metrics.get(code,{})
+            if metric.get('tentativa_em')!=attempt.get('timestamp'): metric={}
+            display.append({**metric,'geracao_tentativa_tse':(' '.join([attempt.get('dg',''),attempt.get('hg','')])).strip(),'municipio':name,'codigo_municipio':code,
                             'estado_tentativa':attempt.get('estado','NAO_CONSULTADO'),
                             'http':attempt.get('http',''),'tentativa_em':attempt.get('timestamp'),
                             'votos':int(last['votos']) if last else None,

@@ -9,6 +9,10 @@ h1{margin-bottom:4px}.card{background:white;padding:16px;border-radius:12px;marg
 table{width:100%;border-collapse:collapse;background:white}th,td{padding:10px;border-bottom:1px solid #ddd;text-align:left;font-size:13px}
 th{position:sticky;top:0;background:#eee}.wrap{overflow:auto;max-height:70vh}.preservado{background:#fff4cf}
 .alerta{color:#8c3600;font-weight:600}.nota{font-size:14px;color:#555}#status{display:block;margin-top:10px}
+
+button{padding:12px 18px;border:0;border-radius:8px;background:#174c70;color:white;font:inherit;cursor:pointer}
+#busca{box-sizing:border-box;width:100%;padding:12px;margin:12px 0;font:inherit;border:1px solid #aaa;border-radius:8px}
+@media(max-width:700px){body{margin:12px}h1{font-size:23px}.wrap{overflow:visible;max-height:none}thead{display:none}table,tbody,tr,td{display:block}tr{background:white;border:1px solid #ddd;border-radius:12px;margin:12px 0;padding:10px}td{display:grid;grid-template-columns:45% 55%;padding:7px 0;overflow-wrap:anywhere}td::before{content:attr(data-label);font-weight:600;padding-right:8px}td:first-child{display:block;font-size:19px;font-weight:700}td:first-child::before{display:none}.preservado{background:#fff4cf}}
 </style>
 </head>
 <body>
@@ -16,9 +20,9 @@ th{position:sticky;top:0;background:#eee}.wrap{overflow:auto;max-height:70vh}.pr
 <div class="card"><b>Ambiente:</b> __ENV__ — DADOS DE TESTE, NÃO É PRODUÇÃO<br>
 <b>Cargo:</b> Deputado Estadual (7)<br><b>Número monitorado:</b> __NUMERO__<br><b>Municípios:</b> <span id="total">50</span>
 <span id="status" role="status">Carregando…</span></div>
-<p class="nota">Os votos exibidos são o último dado validado de cada município. “Preservado” indica que a última coleta não atualizou esse dado. Ausência do candidato ou falha não significa zero voto.</p>
-<div class="wrap"><table><thead><tr>
-<th>Município</th><th>Última tentativa</th><th>HTTP</th><th>Votos confirmados</th><th>Situação do dado</th><th>Último dado válido</th><th>Atualização do TSE</th>
+<p class="nota">Hospedagem de teste: o serviço pode pausar por inatividade e os dados locais podem ser perdidos em reinícios. A primeira coleta pode levar alguns minutos.</p><p class="nota">Os votos exibidos são o último dado validado de cada município. “Preservado” indica que a última coleta não atualizou esse dado. Ausência do candidato ou falha não significa zero voto.</p>
+<button type="button" onclick="go()">Atualizar tela</button><label for="busca" style="display:block;margin-top:16px">Buscar município</label><input id="busca" type="search" placeholder="Ex.: Ibiporã" oninput="filtrar()"><div class="wrap"><table><thead><tr>
+<th>Município</th><th>Última tentativa</th><th>HTTP</th><th>Votos confirmados</th><th>Situação do dado</th><th>Último dado válido</th><th>Atualização do TSE</th><th>Seções apuradas</th><th>Votos válidos</th><th>Apuração</th>
 </tr></thead><tbody id="tb"></tbody></table></div>
 <script>
 function td(value){const e=document.createElement('td');e.textContent=value==null?'—':String(value);return e}
@@ -28,24 +32,28 @@ MUNICIPIO_DIVERGENTE:'Município divergente',CARGO_DIVERGENTE:'Cargo divergente'
 ELEICAO_DIVERGENTE:'Eleição divergente',
 CANDIDATO_DUPLICADO:'Candidato duplicado',NAO_CONSULTADO:'Não consultado'};
 function date(value){return value?new Date(value).toLocaleString('pt-BR'):'—'}
+function filtrar(){const q=document.querySelector("#busca").value.toLocaleLowerCase("pt-BR");for(const r of document.querySelectorAll("#tb tr"))r.hidden=!r.firstChild.textContent.toLocaleLowerCase("pt-BR").includes(q)}
 function render(d){
  const s=d.coleta||{};
  document.querySelector('#total').textContent=s.esperados||50;
  const status=document.querySelector('#status');
- status.className=s.bloqueada?'alerta':'';
- status.textContent='Última coleta: '+date(d.timestamp)+' | '+(s.consultados||0)+'/'+(s.esperados||50)+' consultados | '+
+ const stale=d.timestamp&&(Date.now()-new Date(d.timestamp).getTime()>15*60000);
+ status.className=s.bloqueada||stale?'alerta':'';
+ status.textContent=(stale?'ATENÇÃO: coleta sem atualização há mais de 15 minutos. ':'')+'Última coleta: '+date(d.timestamp)+' | '+(s.consultados||0)+'/'+(s.esperados||50)+' consultados | '+
  (s.bloqueada?'Atualização bloqueada; dados anteriores preservados.':(s.municipios_atualizados||[]).length+' municípios com votos atualizados.');
  const tb=document.querySelector('#tb');tb.replaceChildren();
  for(const x of d.municipios){
   const tr=document.createElement('tr');if(x.preservado)tr.className='preservado';
   const state=x.votos==null?'Sem dado válido':x.preservado?'Preservado':'Atualizado';
   tr.append(td(x.municipio),td(labels[x.estado_tentativa]||x.estado_tentativa),td(x.http),
-   td(x.votos),td(state),td(date(x.dado_valido_em)),td(x.atualizacao_tse||null));tb.appendChild(tr);
+   td(x.votos),td(state),td(date(x.dado_valido_em)),td(x.atualizacao_tse||x.geracao_tentativa_tse||null),td(x.secoes_total?x.secoes_totalizadas+'/'+x.secoes_total+' ('+x.percentual_secoes+'%)':null),td(x.votos_validos),td(x.apuracao==='SECOES_TOTALIZADAS'?'100% das seções; sujeito a retificação':x.apuracao==='PARCIAL'?'Parcial':'Indefinido'));
+   const titles=['Município','Última tentativa','HTTP','Votos confirmados','Situação do dado','Último dado válido','Atualização do TSE','Seções apuradas','Votos válidos','Apuração'];
+   [...tr.children].forEach((c,i)=>c.dataset.label=titles[i]);tb.appendChild(tr);
  }
 }
 async function go(){try{
  const r=await fetch('/api/latest',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);
- render(await r.json());
+ render(await r.json());filtrar();
 }catch(e){const s=document.querySelector('#status');s.className='alerta';s.textContent='Sem conexão com o painel. A tabela pode estar desatualizada.'}}
 go();setInterval(go,10000);
 </script>

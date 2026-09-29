@@ -148,3 +148,12 @@ class PainelTests(unittest.TestCase):
 
 
 if __name__=='__main__': unittest.main()
+
+class IndicadoresTests(unittest.TestCase):
+    def test_sections_and_unknown_are_distinct(self):
+        import radar_norte as r
+        self.assertEqual(r.indicators({'s':{'ts':'10','st':'0'},'v':{'vv':'0'}})['percentual_secoes'],0)
+        self.assertEqual(r.indicators({'s':{'ts':'10','st':'10'}})['apuracao'],'SECOES_TOTALIZADAS')
+        for sec in ({},{'ts':'0','st':'0'},{'ts':'10','st':'11'},{'ts':True,'st':'0'}):
+            self.assertIsNone(r.indicators({'s':sec})['percentual_secoes'])
+        self.assertIsNone(r.indicators({'v':{'vv':True}})['votos_validos'])
