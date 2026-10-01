@@ -17,7 +17,7 @@ class PainelTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory()
         self.root=Path(self.temp.name)
-        self.patches=[patch.object(radar,'REAL_DATA',self.root/'data'),
+        self.patches=[patch.object(radar,'CFG',json.loads((radar.BASE/'config.json').read_text())),patch.object(radar,'REAL_DATA',self.root/'data'),
                       patch.object(radar,'MOCK_DATA',self.root/'mock')]
         for p in self.patches: p.start()
         radar.select_data_dir(False); radar.init_db()
@@ -27,7 +27,7 @@ class PainelTests(unittest.TestCase):
         self.temp.cleanup()
 
     def payload(self,code,votes=9):
-        return {'ele':radar.CFG['election_code'],'cdabr':code,'dg':'28/09/2026','hg':'16:00:00','tf':'n',
+        return {'f':'o','ele':radar.CFG['election_code'],'cdabr':code,'dg':'28/09/2026','hg':'16:00:00','tf':'n',
                 'carg':[{'cd':'7','agr':[{'par':[{'sg':'TESTE','cand':[
                     {'n':'70255','nmu':'CANDIDATO DE TESTE','vap':str(votes)}]}]}]}]}
 
@@ -70,8 +70,9 @@ class PainelTests(unittest.TestCase):
     def test_schema_change_blocks_entire_cycle(self):
         snapshot,valid=self.baseline()
         rows=self.rows(99)
-        broken=self.payload('75914');del broken['carg'][0]['agr'][0]['par'][0]['cand']
-        rows[0]=radar.parse_one('Ibiporã','75914',broken)
+        for i,(name,code) in enumerate(radar.municipalities()[:3]):
+            broken=self.payload(code);del broken['carg'][0]['agr'][0]['par'][0]['cand']
+            rows[i]=radar.parse_one(name,code,broken)
         with patch.dict(radar.CFG,{'min_municipios_ok_to_overwrite':1}):
             self.assertFalse(radar.save(rows))
         self.assertEqual(snapshot,radar.LATEST.read_bytes())
@@ -108,11 +109,12 @@ class PainelTests(unittest.TestCase):
 
     def test_mock_isolation(self):
         snapshot,valid=self.baseline()
+        latest_path,valid_path=radar.LATEST,radar.VALID
         radar.cycle(True)
-        self.assertEqual((self.root/'data/raw_atual.csv').read_bytes(),snapshot)
-        self.assertEqual((self.root/'data/ultimo_dado_valido.csv').read_bytes(),valid)
+        self.assertEqual(latest_path.read_bytes(),snapshot)
+        self.assertEqual(valid_path.read_bytes(),valid)
         self.assertEqual(len(radar.api_state()['tentativas']),50)
-        self.assertTrue(all(x['votos'] is None for x in radar.api_state()['municipios']))
+        self.assertTrue(all(x['votos']==123 for x in radar.api_state()['municipios']))
 
     def test_context_change_cannot_mix_candidates(self):
         snapshot,valid=self.baseline()
@@ -127,6 +129,56 @@ class PainelTests(unittest.TestCase):
         radar.save([radar.parse_one(name,code,None,503,'HTTP 503') for name,code in radar.municipalities()])
         self.assertEqual(radar.LATEST.read_text(),'arquivo anterior preservado')
         self.assertEqual(radar.api_state()['rows'],[])
+
+    def test_one_failure_updates_other_49(self):
+        for failure in (503,200):
+            with self.subTest(failure=failure):
+                self.baseline()
+                rows=self.rows(500)
+                rows[0]=radar.parse_one(*radar.municipalities()[0],None,failure,'JSON_INVALIDO' if failure==200 else 'HTTP 503')
+                radar.save(rows)
+                state=radar.api_state()
+                self.assertFalse(state['coleta']['bloqueada'])
+                self.assertEqual(state['municipios'][0]['votos'],9)
+                self.assertTrue(state['municipios'][0]['preservado'])
+                self.assertTrue(all(r['votos']==500 for r in state['municipios'][1:]))
+                self.assertEqual(state['resumo']['municipios_atuais'],49)
+                self.assertFalse(state['resumo']['total_atual_completo'])
+
+    def test_environment_switch_and_return(self):
+        self.baseline();original=radar.DATA
+        with patch.dict(radar.CFG,{'environment':'OFICIAL_TSE_2026','election_code':'6259','endpoint_template':'https://example.invalid/{code}'}):
+            radar.select_data_dir();radar.init_db()
+            self.assertNotEqual(original,radar.DATA)
+            self.assertEqual(radar.api_state()['resumo']['municipios_com_votos'],0)
+            radar.save(self.rows(700))
+            self.assertEqual(radar.api_state()['municipios'][0]['votos'],700)
+        radar.select_data_dir();radar.init_db()
+        self.assertEqual(radar.api_state()['municipios'][0]['votos'],9)
+
+    def test_failed_cycles_do_not_clear_stale_alarm(self):
+        rows=self.rows()
+        for row in rows: row['timestamp']='2020-01-01T00:00:00+00:00'
+        radar.save(rows)
+        radar.save([radar.parse_one(n,c,None,503,'HTTP 503') for n,c in radar.municipalities()])
+        self.assertTrue(radar.api_state()['alarme_desatualizacao'])
+
+    def test_snapshot_is_authority_after_interrupted_export(self):
+        self.baseline()
+        original=radar.atomic_json
+        def interrupted(path,value):
+            if path.name=='snapshot.json': raise OSError('interrupted')
+            return original(path,value)
+        with patch.object(radar,'atomic_json',side_effect=interrupted):
+            with self.assertRaises(OSError):radar.save(self.rows(500))
+        self.assertTrue(all(r['votos']==9 for r in radar.api_state()['municipios']))
+
+    def test_backoff(self):
+        streak=0
+        for expected in (600,1200,2400,3600,3600):
+            delay,streak=radar.next_delay([{'estado':'HTTP_429'}],streak,300)
+            self.assertEqual(delay,expected)
+        self.assertEqual(radar.next_delay([{'estado':'DADO_VALIDO'}],streak,300),(300,0))
 
     def test_http_api_and_invalid_json(self):
         self.baseline()
@@ -153,7 +205,13 @@ class IndicadoresTests(unittest.TestCase):
     def test_sections_and_unknown_are_distinct(self):
         import radar_norte as r
         self.assertEqual(r.indicators({'s':{'ts':'10','st':'0'},'v':{'vv':'0'}})['percentual_secoes'],0)
-        self.assertEqual(r.indicators({'s':{'ts':'10','st':'10'}})['apuracao'],'SECOES_TOTALIZADAS')
+        self.assertEqual(r.indicators({'s':{'ts':'10','st':'10'}})['apuracao'],'PARCIAL')
         for sec in ({},{'ts':'0','st':'0'},{'ts':'10','st':'11'},{'ts':True,'st':'0'}):
             self.assertIsNone(r.indicators({'s':sec})['percentual_secoes'])
         self.assertIsNone(r.indicators({'v':{'vv':True}})['votos_validos'])
+
+    def test_final_requires_tf_and_sections(self):
+        self.assertEqual(radar.indicators({'s':{'ts':'10','st':'10','sa':'9'},'tf':'s'})['apuracao'],'FINAL')
+        self.assertEqual(radar.indicators({'s':{'ts':'10','st':'10'},'tf':'n'})['apuracao'],'PARCIAL')
+        self.assertEqual(radar.indicators({'s':{'ts':'10','st':'0'},'and':'n'})['apuracao'],'NAO_INICIADA')
+        self.assertIsNone(radar.indicators({'s':{'ts':'10','st':'10','sa':'11'}})['secoes_apuradas'])

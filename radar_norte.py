@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
-import argparse, csv, html as html_escape, json, os, sqlite3, tempfile, threading, time, unicodedata, urllib.request, urllib.error
+import hashlib, argparse, csv, html as html_escape, json, os, sqlite3, tempfile, threading, time, unicodedata, urllib.request, urllib.error
 from coletor_actions import parse_result, atomic_json
 from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 BASE=Path(__file__).resolve().parent
-CFG=json.loads((BASE/'config.json').read_text(encoding='utf-8'))
-REAL_DATA=BASE/'data'; MOCK_DATA=BASE/'data_mock'
+CFG=json.loads((BASE/os.environ.get('RADAR_CONFIG','config.json')).read_text(encoding='utf-8'))
+REAL_DATA=Path(os.environ.get('RADAR_DATA_DIR',str(BASE/'data'))); MOCK_DATA=BASE/'data_mock'
+MOCK_MODE=False
+REFRESH=300
+STARTED=time.time()
 DATA=REAL_DATA; DB=None; LATEST=None; HIST=None
 ATTEMPTS=None; VALID=None; STATUS=None
 STATE_LOCK=threading.RLock()
 URL=CFG['endpoint_template']
 
 def select_data_dir(mock=False):
-    global DATA,DB,LATEST,HIST,ATTEMPTS,VALID,STATUS
-    DATA=MOCK_DATA if mock else REAL_DATA
-    DATA.mkdir(exist_ok=True)
+    global DATA,DB,LATEST,HIST,ATTEMPTS,VALID,STATUS,MOCK_MODE
+    MOCK_MODE=mock
+    context={k:CFG.get(k) for k in ('environment','election_code','cargo_code','candidate_number','endpoint_template','municipalities')}
+    digest=hashlib.sha256(json.dumps(context,sort_keys=True).encode()).hexdigest()[:16]
+    DATA=(MOCK_DATA if mock else REAL_DATA)/digest
+    DATA.mkdir(parents=True,exist_ok=True)
     DB=DATA/'radar.sqlite3'; LATEST=DATA/'raw_atual.csv'; HIST=DATA/'historico_apuracao.csv'
     ATTEMPTS=DATA/'ultima_tentativa.csv'; VALID=DATA/'ultimo_dado_valido.csv'; STATUS=DATA/'estado_coleta.json'
 FIELDS=['timestamp','municipio','codigo_municipio','http','json_valido','municipio_confere','cargo7_confere','schema_confere','candidato_presente','candidato','numero','partido','votos','pct_candidato','dg','hg','tf','estado','source_url','erro']
@@ -32,15 +38,30 @@ def init_db():
         c.execute('''create table if not exists snapshots(id integer primary key, timestamp text, municipio text, codigo text, estado text, votos integer, payload text)''')
         c.execute('create index if not exists ix_snap_mun on snapshots(municipio,timestamp)')
 
-def fetch(url,timeout=20):
+def record_response(url,status,raw,headers,started,error=''):
+    folder=DATA/'evidencias';folder.mkdir(parents=True,exist_ok=True)
+    key=str(time.time_ns())
+    (folder/(key+'.body')).write_bytes(raw)
+    atomic_json(folder/(key+'.json'),{'url':url,'http':status,'inicio':started,'fim':now(),
+                 'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw),
+                 'headers':dict(headers),'erro':error,'arquivo':key+'.body'})
+
+def fetch(url,timeout=10):
+    started=now()
     req=urllib.request.Request(url,headers={'User-Agent':'RadarNorte2026/1.0','Accept':'application/json'})
     try:
         with urllib.request.urlopen(req,timeout=timeout) as r:
             raw=r.read()
+            record_response(url,r.status,raw,r.headers,started)
             try: return r.status,json.loads(raw.decode('utf-8-sig')),''
             except (ValueError,UnicodeError): return r.status,None,'JSON_INVALIDO'
-    except urllib.error.HTTPError as e: return e.code,None,f'HTTP {e.code}'
-    except Exception as e: return 0,None,f'{type(e).__name__}: {e}'
+    except urllib.error.HTTPError as e:
+        raw=e.read();record_response(url,e.code,raw,e.headers,started,str(e))
+        return e.code,None,f'HTTP {e.code}'
+    except Exception as e:
+        error=f'{type(e).__name__}: {e}'
+        record_response(url,0,b'',{},started,error)
+        return 0,None,error
 
 def find_cargo7(payload):
     for x in payload.get('carg',[]) if isinstance(payload,dict) else []:
@@ -65,6 +86,8 @@ def parse_one(mun,code,payload,http=200,err=''):
         row['estado']=f'HTTP_{http}' if http else 'ERRO_COLETA'; return row
     if err or not isinstance(payload,dict):
         row['estado']='JSON_INVALIDO' if err == 'JSON_INVALIDO' or not err else 'ERRO_COLETA'; return row
+    if CFG['environment']=='OFICIAL_TSE_2026' and not MOCK_MODE and payload.get('f')!='o':
+        row.update(estado='FASE_DIVERGENTE',erro='Esperado arquivo de fase oficial (f=o)');return row
     row['json_valido']='SIM'
     row['municipio_confere']='SIM' if str(payload.get('cdabr',''))==str(code) else 'NÃO'
     row['dg']=payload.get('dg',''); row['hg']=payload.get('hg',''); row['tf']=payload.get('tf','')
@@ -78,7 +101,7 @@ def parse_one(mun,code,payload,http=200,err=''):
         hit=next(c for c,p in extract_candidates(find_cargo7(payload)) if str(c.get('n','')).strip()==target)
         row.update(candidato_presente='SIM',candidato=name,partido=party,votos=votes,
                    pct_candidato=hit.get('pvap',''),estado=state)
-    else: row.update(candidato_presente='NÃO',estado='CANDIDATO_AUSENTE_NO_SIMULADO')
+    else: row.update(candidato_presente='NÃO',estado='CANDIDATO_AUSENTE_OFICIAL' if CFG['environment']=='OFICIAL_TSE_2026' else 'CANDIDATO_AUSENTE_NO_SIMULADO')
     return row
 
 def indicators(payload):
@@ -93,13 +116,17 @@ def indicators(payload):
     total,done=integer(sec.get('ts')),integer(sec.get('st'))
     if total is None or done is None or total<=0 or done>total:
         total=done=None
+    counted=integer(sec.get('sa'))
+    if total is None or counted is None or counted>total: counted=None
     return {'secoes_total':total,'secoes_totalizadas':done,
             'percentual_secoes':round(100*done/total,2) if total else None,
             'votos_validos':integer(votes.get('vv')),
-            'apuracao':'SECOES_TOTALIZADAS' if total and done==total else 'PARCIAL' if total else 'INDEFINIDO'}
+            'secoes_apuradas':counted,
+            'tf':payload.get('tf'),'andamento':payload.get('and'),
+            'apuracao':'NAO_INICIADA' if payload.get('and')=='n' else 'FINAL' if payload.get('tf')=='s' and total and done==total else 'PARCIAL' if total else 'INDEFINIDO'}
 
 def mock_payload(mun,code):
-    return {'ele':CFG['election_code'],'cdabr':str(code),'dg':'22/09/2026','hg':'15:00:00','tf':'n','carg':[{'cd':'7','agr':[{'par':[{'sg':'FICT','cand':[{'n':'99999','nm':'CANDIDATO FICTÍCIO','vap':'123','pvap':'1,23'}]}]}]}]}
+    return {'ele':CFG['election_code'],'cdabr':str(code),'dg':'22/09/2026','hg':'15:00:00','tf':'n','and':'p','s':{'ts':'100','st':'25','sa':'25'},'v':{'vv':'1000'},'carg':[{'cd':'7','agr':[{'par':[{'sg':'FICT','cand':[{'n':str(CFG['candidate_number']),'nm':'DEMONSTRAÇÃO — VOTOS FICTÍCIOS','vap':'123','pvap':'1,23'}]}]}]}]}
 
 def atomic_write_csv(path, rows):
     """Write a complete CSV and atomically replace the previous snapshot.
@@ -120,9 +147,9 @@ def atomic_write_csv(path, rows):
         except FileNotFoundError: pass
         raise
 
-def save(rows):
+def save(rows,metrics=None):
     with STATE_LOCK:
-        return _save(rows)
+        return _save(rows,metrics)
 
 def read_csv(path):
     if not path.exists(): return []
@@ -142,26 +169,25 @@ def ensure_context():
         raise ValueError('Dados validados sem identificação do contexto; mantenha-os isolados')
     else: atomic_json(path,context)
 
-def _save(rows):
+def _save(rows,metrics=None):
     ensure_context()
     expected={code for name,code in municipalities()}
     if len(expected)!=len(CFG['municipalities']): raise ValueError('Códigos municipais duplicados na configuração')
     codes=[str(r['codigo_municipio']) for r in rows]
     if len(set(codes))!=len(codes) or not set(codes)<=expected:
         raise ValueError('Municípios duplicados ou não configurados no ciclo')
-    acceptable={'DADO_VALIDO','CANDIDATO_AUSENTE_NO_SIMULADO'}
-    schema_errors={'JSON_INVALIDO','SCHEMA_DIVERGENTE','CARGO_DIVERGENTE','MUNICIPIO_DIVERGENTE','ELEICAO_DIVERGENTE','CANDIDATO_DUPLICADO','VOTOS_INVALIDOS'}
+    acceptable={'DADO_VALIDO','CANDIDATO_AUSENTE_NO_SIMULADO','CANDIDATO_AUSENTE_OFICIAL'}
+    schema_errors={'FASE_DIVERGENTE','JSON_INVALIDO','SCHEMA_DIVERGENTE','CARGO_DIVERGENTE','MUNICIPIO_DIVERGENTE','ELEICAO_DIVERGENTE','CANDIDATO_DUPLICADO','VOTOS_INVALIDOS'}
     good=sum(r['estado'] in acceptable for r in rows)
-    threshold=int(CFG.get('min_municipios_ok_to_overwrite',len(expected)))
-    if not 1<=threshold<=len(expected): raise ValueError('Limite de municípios válidos inválido')
+    threshold=max(2,int(CFG.get('schema_error_limit',3)))
     reasons=[]
-    if set(codes)!=expected: reasons.append('CICLO_INCOMPLETO')
-    if good<threshold: reasons.append('MUNICIPIOS_VALIDOS_INSUFICIENTES')
-    if any(r['estado'] in schema_errors for r in rows): reasons.append('FORMATO_OU_CONTEUDO_DIVERGENTE')
+    if not good: reasons.append('SEM_RESPOSTA_VALIDA')
+    if sum(r['estado'] in schema_errors for r in rows)>=threshold: reasons.append('FORMATO_OU_CONTEUDO_DIVERGENTE')
     if any(r['estado'] in ('HTTP_403','HTTP_429') for r in rows): reasons.append('ACESSO_BLOQUEADO')
     allowed=not reasons
-    # The old snapshot remains on disk. Only this version's validated store feeds the panel.
-    previous={r['codigo_municipio']:r for r in read_csv(VALID)}
+    bundle_path=DATA/'snapshot.json'
+    old=json.loads(bundle_path.read_text()) if bundle_path.exists() else {}
+    previous={r['codigo_municipio']:r for r in old.get('rows',[])}
     updated=[]
     if allowed:
         for r in rows:
@@ -183,17 +209,22 @@ def _save(rows):
     atomic_write_csv(ATTEMPTS,rows)
     if allowed and updated: atomic_write_csv(VALID,valid_rows)
     if publish_latest: atomic_write_csv(LATEST,valid_rows)
-    atomic_json(STATUS,{'timestamp':now(),'esperados':len(expected),'consultados':len(rows),
-                       'respostas_validas':good,'limite_minimo':threshold,'bloqueada':not allowed,
-                       'motivos':reasons,'municipios_atualizados':updated,
-                       'dados_validos_guardados':len(valid_rows),'snapshot_publicado':publish_latest})
+    status={'timestamp':now(),'esperados':len(expected),'consultados':len(rows),
+            'respostas_validas':good,'limite_erros_formato':threshold,'bloqueada':not allowed,
+            'motivos':reasons,'municipios_atualizados':updated,
+            'dados_validos_guardados':len(valid_rows),'snapshot_publicado':publish_latest}
+    atomic_json(STATUS,status)
+    # One atomic file is the source of truth for API votes, status and indicators.
+    # CSVs remain compatible exports; an interrupted export never mixes API generations.
+    atomic_json(bundle_path,{'rows':valid_rows,'tentativas':rows,'coleta':status,'metrics':metrics or {}})
     return publish_latest
 
 def cycle(mock=False):
     select_data_dir(mock)
     init_db()
-    rows=[]; metrics={}
+    rows=[]; metrics={}; started=time.monotonic()
     for index,item in enumerate(CFG['municipalities']):
+        if not mock and time.monotonic()-started>float(CFG.get('cycle_budget_seconds',600)): break
         if isinstance(item, (list, tuple)):
             mun, code = item[0], str(item[1])
         else:
@@ -201,15 +232,14 @@ def cycle(mock=False):
         if mock: status,payload,err=200,mock_payload(mun,code),''
         else: status,payload,err=fetch(URL.format(code=code))
         row=parse_one(mun,code,payload,status,err); rows.append(row)
-        if row['estado'] in ('DADO_VALIDO','CANDIDATO_AUSENTE_NO_SIMULADO'):
+        if row['estado'] in ('DADO_VALIDO','CANDIDATO_AUSENTE_NO_SIMULADO','CANDIDATO_AUSENTE_OFICIAL'):
             metrics[code]={'tentativa_em':row['timestamp'],**indicators(payload)}
         if not mock and status in (403,429):
             # Stop safely; never fill remaining municipalities with zero.
             break
         if not mock and index<len(CFG['municipalities'])-1: time.sleep(max(2.5,float(CFG.get('request_interval_seconds',2.5))))
     with STATE_LOCK:
-        save(rows)
-        atomic_json(DATA/'indicadores_municipais.json',metrics)
+        save(rows,metrics)
     return rows
 
 def latest_rows():
@@ -218,12 +248,19 @@ def latest_rows():
 def api_state():
     with STATE_LOCK:
         ensure_context()
-        attempts={r['codigo_municipio']:r for r in read_csv(ATTEMPTS)}
-        valid=read_csv(VALID)
+        bundle_path=DATA/'snapshot.json'
+        bundle=json.loads(bundle_path.read_text()) if bundle_path.exists() else {}
+        attempts={r['codigo_municipio']:r for r in bundle.get('tentativas',[])}
+        valid=bundle.get('rows',[])
         saved={r['codigo_municipio']:r for r in valid}
-        status=json.loads(STATUS.read_text(encoding='utf-8')) if STATUS.exists() else {}
-        metric_path=DATA/'indicadores_municipais.json'
-        metrics=json.loads(metric_path.read_text()) if metric_path.exists() else {}
+        status=bundle.get('coleta',{})
+        metrics=bundle.get('metrics',{})
+        worker_path=DATA/'worker.json'
+        worker=json.loads(worker_path.read_text()) if worker_path.exists() else {}
+        stale_limit=2*(REFRESH+int(CFG.get('cycle_budget_seconds',600)))
+        def age(stamp):
+            try:return max(0,time.time()-datetime.fromisoformat(stamp).timestamp())
+            except (ValueError,TypeError):return None
         display=[]
         for name,code in municipalities():
             attempt=attempts.get(code,{})
@@ -238,34 +275,81 @@ def api_state():
                             'dado_valido_em':last.get('timestamp'),
                             'candidato':last.get('candidato',''),
                             'preservado':bool(last) and not fresh,
+                            'desatualizado':bool(last) and (age(last.get('timestamp')) is None or age(last.get('timestamp'))>stale_limit),
                             'atualizacao_tse':(' '.join([last.get('dg',''),last.get('hg','')])).strip()})
+        allfresh=len(valid)==len(display) and all(not r['preservado'] and not r['desatualizado'] for r in display)
+        states=[r.get('apuracao','INDEFINIDO') for r in display]
+        aggregate='NAO_INICIADA' if all(x=='NAO_INICIADA' for x in states) else 'FINAL' if allfresh and all(x=='FINAL' for x in states) else 'PARCIAL'
+        if not valid: aggregate='SEM_DADOS'
+        # Failed attempts must never reset the age of validated votes.
+        stale=age(status.get('timestamp'))
+        stale_alarm=any(r['desatualizado'] for r in display) or (stale>stale_limit if stale is not None else time.time()-STARTED>stale_limit)
         return {'timestamp':status.get('timestamp'),'rows':valid,'tentativas':list(attempts.values()),
-                'coleta':status,'municipios':display}
+                'coleta':status,'municipios':display,'worker':worker,
+                'ambiente':'DEMONSTRACAO' if MOCK_MODE else CFG['environment'],
+                'eleicao':CFG['election_code'],'numero':CFG['candidate_number'],
+                'alarme_desatualizacao':stale_alarm,
+                'limite_atraso_segundos':stale_limit,
+                'resumo':{'soma_ultimos_dados':sum(int(r['votos']) for r in valid) if valid else None,
+                          'municipios_com_votos':len(valid),'municipios_atuais':sum(r['votos'] is not None and not r['preservado'] and not r['desatualizado'] for r in display),
+                          'total_atual_completo':allfresh,'apuracao':aggregate}}
+
 
 def html():
     page=(BASE/'painel.html').read_text(encoding='utf-8')
-    return page.replace('__ENV__',html_escape.escape(CFG.get('environment','SIMULADO_TSE_2026'))).replace('__NUMERO__',html_escape.escape(str(CFG['candidate_number'])))
+    return page.replace('__ENV__',html_escape.escape('DEMONSTRAÇÃO — VOTOS FICTÍCIOS' if MOCK_MODE else CFG.get('environment','SIMULADO_TSE_2026'))).replace('__NUMERO__',html_escape.escape(str(CFG['candidate_number'])))
 
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path=='/' or self.path.startswith('/index'):
             b=html().encode(); typ='text/html; charset=utf-8'
-        elif self.path.startswith('/api/latest'):
-            b=json.dumps(api_state(),ensure_ascii=False).encode(); typ='application/json; charset=utf-8'
+        elif self.path=='/api/latest':
+            try: state=api_state()
+            except Exception as exc:
+                self.send_response(503); self.send_header('Content-Type','application/json'); self.end_headers(); self.wfile.write(json.dumps({'erro':'CONFIGURACAO_OU_DADOS','mensagem':str(exc)}).encode()); return
+            b=json.dumps(state,ensure_ascii=False).encode(); typ='application/json; charset=utf-8'
+        elif self.path=='/api/history':
+            with sqlite3.connect(DB) as db:
+                records=db.execute('select payload from snapshots order by id desc limit 200').fetchall()
+            b=json.dumps([json.loads(r[0]) for r in records],ensure_ascii=False).encode(); typ='application/json; charset=utf-8'
+        elif self.path=='/historico.csv':
+            with STATE_LOCK: b=HIST.read_bytes() if HIST.exists() else b''
+            typ='text/csv; charset=utf-8'
         else: self.send_response(404); self.end_headers(); return
         self.send_response(200); self.send_header('Content-Type',typ); self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff'); self.send_header('Content-Length',str(len(b))); self.end_headers(); self.wfile.write(b)
     def log_message(self,*a): pass
 
+def next_delay(rows,streak,refresh):
+    blocked=any(r['estado'] in ('HTTP_403','HTTP_429') for r in rows)
+    streak=streak+1 if blocked else 0
+    return (min(3600,600*2**min(streak-1,3)) if blocked else max(10,refresh)),streak
+
+def worker_loop(mock,refresh):
+    path=DATA/'worker.json'
+    state=json.loads(path.read_text()) if path.exists() else {}
+    streak=int(state.get('bloqueios_consecutivos',0))
+    while True:
+        remaining=max(0,float(state.get('proxima_tentativa_epoch',0))-time.time())
+        if remaining>0:
+            time.sleep(min(60,remaining)); continue
+        state={'em_coleta':True,'inicio':now(),'bloqueios_consecutivos':streak}
+        atomic_json(path,state)
+        try:
+            rows=cycle(mock)
+            delay,streak=next_delay(rows,streak,refresh)
+            state.update(erro=None)
+        except Exception as exc:
+            delay=max(60,refresh);state.update(erro=type(exc).__name__+': '+str(exc))
+            print('coleta:',exc,flush=True)
+        state.update(em_coleta=False,fim=now(),proxima_tentativa_epoch=time.time()+delay,bloqueios_consecutivos=streak)
+        atomic_json(path,state)
+
 def serve(host,port,mock,refresh):
+    global REFRESH
+    REFRESH=refresh
     select_data_dir(mock); init_db()
-    def worker():
-        while True:
-            try: cycle(mock)
-            except Exception as e: print('coleta:',e,flush=True)
-            time.sleep(refresh)
-    threading.Thread(target=worker,daemon=True).start()
-    shown_host='127.0.0.1' if host in ('127.0.0.1','localhost') else host
-    print(f'Radar Norte ativo em http://{shown_host}:{port} | mock={mock} | refresh={refresh}s',flush=True)
+    threading.Thread(target=worker_loop,args=(mock,refresh),daemon=True).start()
+    print(f'Radar Norte ativo | mock={mock} | refresh={refresh}s',flush=True)
     ThreadingHTTPServer((host,port),H).serve_forever()
 
 def main():

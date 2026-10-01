@@ -56,3 +56,8 @@ na mesma pasta. `data_mock/` permanece isolado de `data/`.
 Verificação completa: `python -m unittest -v test_coletor_actions test_painel`.
 Evidências da integração: `INTEGRACAO_PAINEL_2026-09-28.md`,
 `RESULTADO_REPLAY_PAINEL.json` e `RESULTADO_INTERFACE.json`.
+
+
+## Atualização de 01/10/2026
+
+Consulte [CORRECOES_2026-10-01.md](CORRECOES_2026-10-01.md) para comportamento atual, configuração oficial, testes e limitações de hospedagem. O histórico acima documenta versões anteriores; não é declaração de prontidão eleitoral.

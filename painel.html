@@ -8,7 +8,7 @@ body{font-family:system-ui;margin:20px;background:#f5f5f5;color:#202020}
 h1{margin-bottom:4px}.card{background:white;padding:16px;border-radius:12px;margin:12px 0;box-shadow:0 1px 5px #ccc}
 table{width:100%;border-collapse:collapse;background:white}th,td{padding:10px;border-bottom:1px solid #ddd;text-align:left;font-size:13px}
 th{position:sticky;top:0;background:#eee}.wrap{overflow:auto;max-height:70vh}.preservado{background:#fff4cf}
-.alerta{color:#8c3600;font-weight:600}.nota{font-size:14px;color:#555}#status{display:block;margin-top:10px}
+[hidden]{display:none!important}.alerta{color:#ad1020;font-weight:600}.nota{font-size:14px;color:#555}#status{display:block;margin-top:10px}
 
 button{padding:12px 18px;border:0;border-radius:8px;background:#174c70;color:white;font:inherit;cursor:pointer}
 #busca{box-sizing:border-box;width:100%;padding:12px;margin:12px 0;font:inherit;border:1px solid #aaa;border-radius:8px}
@@ -17,44 +17,54 @@ button{padding:12px 18px;border:0;border-radius:8px;background:#174c70;color:whi
 </head>
 <body>
 <h1>Radar Norte — Apuração 2026</h1>
-<div class="card"><b>Ambiente:</b> __ENV__ — DADOS DE TESTE, NÃO É PRODUÇÃO<br>
+<div class="card"><b>Ambiente:</b> <span id="ambiente">__ENV__</span><br>
 <b>Cargo:</b> Deputado Estadual (7)<br><b>Número monitorado:</b> __NUMERO__<br><b>Municípios:</b> <span id="total">50</span>
 <span id="status" role="status">Carregando…</span></div>
 <p class="nota">Hospedagem de teste: o serviço pode pausar por inatividade e os dados locais podem ser perdidos em reinícios. A primeira coleta pode levar alguns minutos.</p><p class="nota">Os votos exibidos são o último dado validado de cada município. “Preservado” indica que a última coleta não atualizou esse dado. Ausência do candidato ou falha não significa zero voto.</p>
+<div class="card"><b id="apuracao">Aguardando dados</b><p id="soma">Votos confirmados: —</p><p id="cobertura" class="nota"></p></div>
 <button type="button" onclick="go()">Atualizar tela</button><label for="busca" style="display:block;margin-top:16px">Buscar município</label><input id="busca" type="search" placeholder="Ex.: Ibiporã" oninput="filtrar()"><div class="wrap"><table><thead><tr>
-<th>Município</th><th>Última tentativa</th><th>HTTP</th><th>Votos confirmados</th><th>Situação do dado</th><th>Último dado válido</th><th>Atualização do TSE</th><th>Seções apuradas</th><th>Votos válidos</th><th>Apuração</th>
+<th>Município</th><th>Última tentativa</th><th>HTTP</th><th>Votos confirmados</th><th>Situação do dado</th><th>Último dado válido</th><th>Atualização do TSE</th><th>Seções totalizadas</th><th>Seções apuradas</th><th>Votos válidos</th><th>Apuração</th>
 </tr></thead><tbody id="tb"></tbody></table></div>
+<details class="card" ontoggle="if(this.open)historyLoad()"><summary>Histórico recente</summary><p><a href="/historico.csv" download="historico-radar.csv">Baixar histórico CSV</a></p><p class="nota">Últimas 200 tentativas registradas neste servidor.</p><div id="historico"></div></details>
 <script>
 function td(value){const e=document.createElement('td');e.textContent=value==null?'—':String(value);return e}
 const labels={DADO_VALIDO:'Candidato presente',CANDIDATO_AUSENTE_NO_SIMULADO:'Candidato ausente no simulado',
-ERRO_COLETA:'Falha de coleta',JSON_INVALIDO:'JSON inválido',SCHEMA_DIVERGENTE:'Formato divergente',
+CANDIDATO_AUSENTE_OFICIAL:'ALERTA: candidato ausente no arquivo oficial',ERRO_COLETA:'Falha de coleta',JSON_INVALIDO:'JSON inválido',SCHEMA_DIVERGENTE:'Formato divergente',
 MUNICIPIO_DIVERGENTE:'Município divergente',CARGO_DIVERGENTE:'Cargo divergente',VOTOS_INVALIDOS:'Votos inválidos',
-ELEICAO_DIVERGENTE:'Eleição divergente',
+ELEICAO_DIVERGENTE:'Eleição divergente',FASE_DIVERGENTE:'Arquivo fora da fase oficial',
 CANDIDATO_DUPLICADO:'Candidato duplicado',NAO_CONSULTADO:'Não consultado'};
 function date(value){return value?new Date(value).toLocaleString('pt-BR'):'—'}
 function filtrar(){const q=document.querySelector("#busca").value.toLocaleLowerCase("pt-BR");for(const r of document.querySelectorAll("#tb tr"))r.hidden=!r.firstChild.textContent.toLocaleLowerCase("pt-BR").includes(q)}
+const phases={NAO_INICIADA:'Apuração não iniciada — zeros de preparação',FINAL:'FINAL segundo o arquivo do TSE; sujeito a retificação',PARCIAL:'PARCIAL',SEM_DADOS:'Sem votos validados',INDEFINIDO:'Situação não informada'};
 function render(d){
- const s=d.coleta||{};
+ const s=d.coleta||{},summary=d.resumo||{},worker=d.worker||{};
  document.querySelector('#total').textContent=s.esperados||50;
+ document.querySelector('#ambiente').textContent=d.ambiente==='DEMONSTRACAO'?'DEMONSTRAÇÃO — VOTOS FICTÍCIOS':d.ambiente==='OFICIAL_TSE_2026'?'TSE OFICIAL — eleição '+d.eleicao:'SIMULADO — DADOS DE TESTE';
+ document.querySelector('#apuracao').textContent=phases[summary.apuracao]||'Situação não informada';
+ document.querySelector('#soma').textContent='Votos confirmados: '+(summary.soma_ultimos_dados==null?'—':Number(summary.soma_ultimos_dados).toLocaleString('pt-BR'));
+ document.querySelector('#cobertura').textContent='Soma dos últimos dados válidos de '+(summary.municipios_com_votos||0)+'/50 municípios. '+(summary.total_atual_completo?'Todos atualizados nesta passagem.':'Cobertura incompleta ou dados preservados: a soma pode reunir horários diferentes.');
  const status=document.querySelector('#status');
- const stale=d.timestamp&&(Date.now()-new Date(d.timestamp).getTime()>15*60000);
- status.className=s.bloqueada||stale?'alerta':'';
- status.textContent=(stale?'ATENÇÃO: coleta sem atualização há mais de 15 minutos. ':'')+'Última coleta: '+date(d.timestamp)+' | '+(s.consultados||0)+'/'+(s.esperados||50)+' consultados | '+
- (s.bloqueada?'Atualização bloqueada; dados anteriores preservados.':(s.municipios_atualizados||[]).length+' municípios com votos atualizados.');
+ const absent=(d.municipios||[]).some(x=>x.estado_tentativa==='CANDIDATO_AUSENTE_OFICIAL');
+ status.className=s.bloqueada||d.alarme_desatualizacao||worker.erro||absent?'alerta':'';
+ status.textContent=(d.alarme_desatualizacao?'ALERTA: dados sem atualização válida; confira os horários. ':'')+(absent?'ALERTA: candidato ausente em arquivo oficial. ':'')+'Última coleta concluída: '+date(d.timestamp)+' | '+(s.consultados||0)+'/'+(s.esperados||50)+' consultados | '+
+ (s.bloqueada?'Ciclo bloqueado; dados anteriores preservados.':(s.municipios_atualizados||[]).length+' municípios com votos atualizados.')+
+ (worker.em_coleta?' Coleta em andamento.':'')+(worker.erro?' Erro de coleta: '+worker.erro:'')+(worker.bloqueios_consecutivos?' Acesso bloqueado pelo TSE; nova tentativa após '+date(worker.proxima_tentativa_epoch*1000)+'.':'');
  const tb=document.querySelector('#tb');tb.replaceChildren();
  for(const x of d.municipios){
   const tr=document.createElement('tr');if(x.preservado)tr.className='preservado';
-  const state=x.votos==null?'Sem dado válido':x.preservado?'Preservado':'Atualizado';
+  const state=x.votos==null?'Sem dado válido':x.desatualizado?'DADO ANTIGO':x.preservado?'Preservado':'Atualizado';
   tr.append(td(x.municipio),td(labels[x.estado_tentativa]||x.estado_tentativa),td(x.http),
-   td(x.votos),td(state),td(date(x.dado_valido_em)),td(x.atualizacao_tse||x.geracao_tentativa_tse||null),td(x.secoes_total?x.secoes_totalizadas+'/'+x.secoes_total+' ('+x.percentual_secoes+'%)':null),td(x.votos_validos),td(x.apuracao==='SECOES_TOTALIZADAS'?'100% das seções; sujeito a retificação':x.apuracao==='PARCIAL'?'Parcial':'Indefinido'));
-   const titles=['Município','Última tentativa','HTTP','Votos confirmados','Situação do dado','Último dado válido','Atualização do TSE','Seções apuradas','Votos válidos','Apuração'];
+   td(x.votos),td(state),td(date(x.dado_valido_em)),td(x.atualizacao_tse||x.geracao_tentativa_tse||null),td(x.secoes_total?x.secoes_totalizadas+'/'+x.secoes_total+' ('+x.percentual_secoes+'%)':null),td(x.secoes_apuradas),td(x.votos_validos),td(phases[x.apuracao]||'Situação não informada'));
+   const titles=['Município','Última tentativa','HTTP','Votos confirmados','Situação do dado','Último dado válido','Atualização do TSE','Seções totalizadas','Seções apuradas','Votos válidos','Apuração'];
    [...tr.children].forEach((c,i)=>c.dataset.label=titles[i]);tb.appendChild(tr);
  }
 }
-async function go(){try{
- const r=await fetch('/api/latest',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);
- render(await r.json());filtrar();
-}catch(e){const s=document.querySelector('#status');s.className='alerta';s.textContent='Sem conexão com o painel. A tabela pode estar desatualizada.'}}
+let loading=false;
+async function request(path){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),12000);try{const r=await fetch(path,{cache:'no-store',signal:controller.signal});const d=await r.json();if(!r.ok)throw new Error(d.mensagem||'HTTP '+r.status);return d}finally{clearTimeout(timer)}}
+async function go(){if(loading)return;loading=true;try{
+ render(await request('/api/latest'));filtrar();
+}catch(e){const s=document.querySelector('#status');s.className='alerta';s.textContent='Falha ao atualizar: '+e.message+'. A tabela exibida pode estar desatualizada.'}finally{loading=false}}
+async function historyLoad(){const box=document.querySelector('#historico');try{const rows=await request('/api/history');box.replaceChildren();if(!rows.length)box.textContent='Nenhum registro ainda.';for(const r of rows){const p=document.createElement('p');p.textContent=date(r.timestamp)+' — '+r.municipio+' — '+(r.votos===''?'sem votos validados':r.votos+' votos')+' — '+(labels[r.estado]||r.estado);box.appendChild(p)}}catch(e){box.textContent='Histórico indisponível: '+e.message}}
 go();setInterval(go,10000);
 </script>
 </body></html>
