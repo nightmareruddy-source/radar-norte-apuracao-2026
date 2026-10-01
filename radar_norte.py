@@ -2,6 +2,7 @@
 import hashlib, argparse, csv, html as html_escape, json, os, sqlite3, tempfile, threading, time, unicodedata, urllib.request, urllib.error
 from coletor_actions import parse_result, atomic_json
 from datetime import datetime, timezone
+from contextlib import closing
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
@@ -34,7 +35,7 @@ def now(): return datetime.now(timezone.utc).astimezone().isoformat(timespec='se
 
 def init_db():
     if DB is None: select_data_dir(False)
-    with sqlite3.connect(DB) as c:
+    with closing(sqlite3.connect(DB)) as c, c:
         c.execute('''create table if not exists snapshots(id integer primary key, timestamp text, municipio text, codigo text, estado text, votos integer, payload text)''')
         c.execute('create index if not exists ix_snap_mun on snapshots(municipio,timestamp)')
 
@@ -200,7 +201,7 @@ def _save(rows,metrics=None):
         w=csv.DictWriter(f,fieldnames=FIELDS)
         if new: w.writeheader()
         w.writerows(rows)
-    with sqlite3.connect(DB) as c:
+    with closing(sqlite3.connect(DB)) as c, c:
         for r in rows:
             v=None
             try: v=int(r['votos']) if str(r['votos']).strip() else None
@@ -283,7 +284,7 @@ def api_state():
         if not valid: aggregate='SEM_DADOS'
         # Failed attempts must never reset the age of validated votes.
         stale=age(status.get('timestamp'))
-        stale_alarm=any(r['desatualizado'] for r in display) or (stale>stale_limit if stale is not None else time.time()-STARTED>stale_limit)
+        stale_alarm=(not valid and time.time()-STARTED>stale_limit) or any(r['desatualizado'] for r in display) or (stale>stale_limit if stale is not None else time.time()-STARTED>stale_limit)
         return {'timestamp':status.get('timestamp'),'rows':valid,'tentativas':list(attempts.values()),
                 'coleta':status,'municipios':display,'worker':worker,
                 'ambiente':'DEMONSTRACAO' if MOCK_MODE else CFG['environment'],
@@ -309,7 +310,7 @@ class H(BaseHTTPRequestHandler):
                 self.send_response(503); self.send_header('Content-Type','application/json'); self.end_headers(); self.wfile.write(json.dumps({'erro':'CONFIGURACAO_OU_DADOS','mensagem':str(exc)}).encode()); return
             b=json.dumps(state,ensure_ascii=False).encode(); typ='application/json; charset=utf-8'
         elif self.path=='/api/history':
-            with sqlite3.connect(DB) as db:
+            with closing(sqlite3.connect(DB)) as db, db:
                 records=db.execute('select payload from snapshots order by id desc limit 200').fetchall()
             b=json.dumps([json.loads(r[0]) for r in records],ensure_ascii=False).encode(); typ='application/json; charset=utf-8'
         elif self.path=='/historico.csv':

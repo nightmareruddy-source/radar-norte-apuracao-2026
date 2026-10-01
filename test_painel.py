@@ -1,3 +1,4 @@
+from contextlib import closing
 import copy
 import csv
 import json
@@ -64,7 +65,7 @@ class PainelTests(unittest.TestCase):
         self.assertTrue(state['coleta']['bloqueada'])
         self.assertTrue(all(r['votos']=='' for r in state['tentativas']))
         self.assertTrue(all(r['preservado'] for r in state['municipios']))
-        with sqlite3.connect(radar.DB) as db:
+        with closing(sqlite3.connect(radar.DB)) as db, db:
             self.assertEqual(db.execute('select count(*) from snapshots where estado="HTTP_503" and votos is null').fetchone()[0],50)
 
     def test_schema_change_blocks_entire_cycle(self):
@@ -172,6 +173,17 @@ class PainelTests(unittest.TestCase):
         with patch.object(radar,'atomic_json',side_effect=interrupted):
             with self.assertRaises(OSError):radar.save(self.rows(500))
         self.assertTrue(all(r['votos']==9 for r in radar.api_state()['municipios']))
+
+    def test_initial_failures_raise_alarm(self):
+        radar.save([radar.parse_one(n,c,None,503,'HTTP 503') for n,c in radar.municipalities()])
+        with patch.object(radar,'STARTED',0):
+            self.assertTrue(radar.api_state()['alarme_desatualizacao'])
+
+    def test_official_rejects_nonofficial_phase(self):
+        with patch.dict(radar.CFG,{'environment':'OFICIAL_TSE_2026'}):
+            name,code=radar.municipalities()[0]
+            p=self.payload(code);p['f']='s'
+            self.assertEqual(radar.parse_one(name,code,p)['estado'],'FASE_DIVERGENTE')
 
     def test_backoff(self):
         streak=0

@@ -23,7 +23,7 @@
 
 ## Evidência de testes
 
-18 testes unitários/integração passam: parser, 49 atualizações com 1 HTTP503 ou JSON inválido, bloqueio por múltiplas divergências, zero distinto de ausência, troca/retorno de contexto, interrupção antes de gravar snapshot, alerta diante de falhas, isolamento do mock, backoff e HTTP/API.
+20 testes unitários/integração passam: parser, 49 atualizações com 1 HTTP503 ou JSON inválido, bloqueio por múltiplas divergências, zero distinto de ausência, troca/retorno de contexto, interrupção antes de gravar snapshot, alerta diante de falhas, isolamento do mock, backoff e HTTP/API.
 DOM com jsdom: zero visível, rótulo pré-eleição, 11 colunas, filtro, proteção contra HTML de dados e alerta. Isso não é validação visual em iPhone.
 Replay local dos 50 arquivos oficiais coletados em 30/09: candidato presente, votos zero, apuração não iniciada, 3782 seções totais. Replay NÃO é nova coleta ao vivo nem prova de apuração iniciada.
 
