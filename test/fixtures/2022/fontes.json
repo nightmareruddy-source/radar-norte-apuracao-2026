@@ -1,0 +1,20 @@
+[
+  {
+    "url": "https://resultados.tse.jus.br/oficial/ele2022/546/dados-simplificados/pr/pr75914-c0007-e000546-r.json",
+    "http": 404,
+    "consultado_em": "2026-10-01T11:54:32.629197+00:00",
+    "resultado": "ARQUIVO_NAO_OBTIDO"
+  },
+  {
+    "url": "https://resultados.tse.jus.br/oficial/ele2022/546/dados-simplificados/pr/pr76678-c0007-e000546-r.json",
+    "http": 404,
+    "consultado_em": "2026-10-01T11:54:42.968845+00:00",
+    "resultado": "ARQUIVO_NAO_OBTIDO"
+  },
+  {
+    "url": "https://resultados.tse.jus.br/oficial/ele2022/546/dados-simplificados/pr/pr74713-c0007-e000546-r.json",
+    "http": 404,
+    "consultado_em": "2026-10-01T11:54:51.036363+00:00",
+    "resultado": "ARQUIVO_NAO_OBTIDO"
+  }
+]

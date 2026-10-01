@@ -3,6 +3,9 @@ import hashlib, argparse, csv, html as html_escape, json, os, sqlite3, tempfile,
 from coletor_actions import parse_result, atomic_json
 from datetime import datetime, timezone
 from contextlib import closing
+from evidencias import salvar_se_mudou
+from urllib.parse import urlsplit
+import re
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
@@ -40,12 +43,14 @@ def init_db():
         c.execute('create index if not exists ix_snap_mun on snapshots(municipio,timestamp)')
 
 def record_response(url,status,raw,headers,started,error=''):
-    folder=DATA/'evidencias';folder.mkdir(parents=True,exist_ok=True)
-    key=str(time.time_ns())
-    (folder/(key+'.body')).write_bytes(raw)
-    atomic_json(folder/(key+'.json'),{'url':url,'http':status,'inicio':started,'fim':now(),
-                 'sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw),
-                 'headers':dict(headers),'erro':error,'arquivo':key+'.body'})
+    # Use TSE municipality code (not IBGE) plus URL identity. A different
+    # endpoint must not share a municipality observation stream by accident.
+    match=re.search(r'/pr([0-9]{5})-c0007-',urlsplit(url).path)
+    code=match.group(1) if match else 'outro'
+    key=code+'-'+hashlib.sha256(url.encode()).hexdigest()[:16]
+    return salvar_se_mudou(DATA/'evidencias',key,raw,meta={
+        'url':url,'codigo_tse':code,'http':status,'inicio':started,'fim':now(),
+        'headers':dict(headers),'erro':error})
 
 def fetch(url,timeout=10):
     started=now()

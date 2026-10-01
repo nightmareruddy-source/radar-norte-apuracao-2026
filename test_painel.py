@@ -227,3 +227,6 @@ class IndicadoresTests(unittest.TestCase):
         self.assertEqual(radar.indicators({'s':{'ts':'10','st':'10'},'tf':'n'})['apuracao'],'PARCIAL')
         self.assertEqual(radar.indicators({'s':{'ts':'10','st':'0'},'and':'n'})['apuracao'],'NAO_INICIADA')
         self.assertIsNone(radar.indicators({'s':{'ts':'10','st':'10','sa':'11'}})['secoes_apuradas'])
+
+# Include storage regressions in the existing Render build gate.
+from test_evidencias import EvidenciasTests

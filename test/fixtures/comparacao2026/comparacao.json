@@ -1,0 +1,24 @@
+{
+  "consultas": [
+    {
+      "url": "https://resultados.tse.jus.br/oficial/ele2026/6259/dados/pr/pr75914-c0007-e006259-u.json",
+      "http": 200,
+      "consultado_em": "2026-10-01T11:52:23.151530+00:00",
+      "sha256": "4a08d219f832d74cb3bc2b37cf3fa84c0864f03e6fb7b3728490808323a52099",
+      "dg": "29/09/2026",
+      "hg": "19:29:14",
+      "bytes": 133527
+    },
+    {
+      "url": "https://resultados.tse.jus.br/oficial/ele2026/6259/dados/pr/pr75914-c0007-e006259-u.json",
+      "http": 200,
+      "consultado_em": "2026-10-01T11:52:33.277441+00:00",
+      "sha256": "4a08d219f832d74cb3bc2b37cf3fa84c0864f03e6fb7b3728490808323a52099",
+      "dg": "29/09/2026",
+      "hg": "19:29:14",
+      "bytes": 133527
+    }
+  ],
+  "brutos_identicos": true,
+  "campos_ignorados": []
+}
