@@ -230,3 +230,67 @@ class IndicadoresTests(unittest.TestCase):
 
 # Include storage regressions in the existing Render build gate.
 from test_evidencias import EvidenciasTests
+
+
+class WorkerScheduleTests(unittest.TestCase):
+    setUp=PainelTests.setUp
+    tearDown=PainelTests.tearDown
+    rows=PainelTests.rows
+    payload=PainelTests.payload
+    baseline=PainelTests.baseline
+
+    def run_worker(self, outcomes, persisted=None, duration=135):
+        clock=[1000.0];starts=[];states=[]
+        class Finished(BaseException): pass
+        if persisted: radar.atomic_json(radar.DATA/'worker.json',persisted)
+        original=radar.atomic_json
+        def collect(mock):
+            if len(starts)==len(outcomes): raise Finished()
+            starts.append(clock[0]);clock[0]+=duration
+            return [{'estado':outcomes[len(starts)-1]}]
+        def write(path,state):
+            if not state['em_coleta']: states.append(dict(state))
+            original(path,state)
+        with patch.object(radar.time,'time',side_effect=lambda:clock[0]),patch.object(radar.time,'sleep',side_effect=lambda t:clock.__setitem__(0,clock[0]+t)),patch.object(radar,'cycle',side_effect=collect),patch.object(radar,'atomic_json',side_effect=write):
+            with self.assertRaises(Finished):radar.worker_loop(False,300)
+        return starts,states
+
+    def test_interval_from_start_and_immediate_startup(self):
+        starts,states=self.run_worker(['DADO_VALIDO']*3,{'proxima_tentativa_epoch':1500,'bloqueios_consecutivos':0})
+        self.assertEqual(starts,[1000,1300,1600])
+        self.assertEqual(states[0]['proxima_tentativa_epoch'],1300)
+
+    def test_403_and_429_recover_automatically(self):
+        for status in ('HTTP_403','HTTP_429'):
+            with self.subTest(status=status):
+                starts,states=self.run_worker([status,status,'DADO_VALIDO','DADO_VALIDO'],{'bloqueios_consecutivos':0})
+                self.assertEqual(starts,[1000,1735,3070,3370])
+                self.assertEqual([s['bloqueios_consecutivos'] for s in states],[1,2,0,0])
+
+    def test_restart_preserves_block_cooldown(self):
+        starts,_=self.run_worker(['DADO_VALIDO'],{'bloqueios_consecutivos':1,'proxima_tentativa_epoch':1600})
+        self.assertEqual(starts,[1600])
+
+    def test_slow_cycle_does_not_overlap_or_catch_up(self):
+        starts,_=self.run_worker(['DADO_VALIDO']*2,duration=400)
+        self.assertEqual(starts,[1000,1410])
+
+    def test_alarm_boundary_900_seconds(self):
+        self.baseline();state=radar.api_state()
+        from datetime import datetime
+        stamp=min(datetime.fromisoformat(x['dado_valido_em']).timestamp() for x in state['municipios'])
+        with patch.object(radar.time,'time',return_value=stamp+899):
+            self.assertFalse(radar.api_state()['alarme_desatualizacao'])
+        with patch.object(radar.time,'time',return_value=stamp+901):
+            self.assertTrue(radar.api_state()['alarme_desatualizacao'])
+        self.assertEqual(radar.api_state()['limite_atraso_segundos'],900)
+
+    def test_section_summary_complete_and_missing(self):
+        rows=self.rows();metrics={r['codigo_municipio']:{'tentativa_em':r['timestamp'],'secoes_total':100,'secoes_totalizadas':25} for r in rows}
+        radar.save(rows,metrics);s=radar.api_state()['resumo']
+        self.assertEqual((s['secoes_totalizadas'],s['secoes_total']),(1250,5000))
+        metrics.pop(rows[0]['codigo_municipio']);radar.save(rows,metrics)
+        s=radar.api_state()['resumo'];self.assertIsNone(s['secoes_total']);self.assertFalse(s['secoes_cobertura_completa'])
+
+# Include authentic simulation regression in Render's existing build test gate.
+from test_simulado2026 import Simulado2026Tests

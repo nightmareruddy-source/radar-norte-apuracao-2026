@@ -21,7 +21,7 @@ button{padding:12px 18px;border:0;border-radius:8px;background:#174c70;color:whi
 <b>Cargo:</b> Deputado Estadual (7)<br><b>Número monitorado:</b> __NUMERO__<br><b>Municípios:</b> <span id="total">50</span>
 <span id="status" role="status">Carregando…</span></div>
 <p class="nota">A coleta é automática. Confira abaixo o horário da última consulta e a atualização informada pelo TSE. Uma nova consulta pode retornar o mesmo resultado; a primeira coleta pode levar alguns minutos.</p><p class="nota">Os votos exibidos são o último dado validado de cada município. “Preservado” indica que a última coleta não atualizou esse dado. Ausência do candidato ou falha não significa zero voto.</p>
-<div class="card"><b id="apuracao">Aguardando dados</b><p id="soma">Votos confirmados: —</p><p id="cobertura" class="nota"></p></div>
+<div class="card"><b id="apuracao">Aguardando dados</b><p id="soma">Votos confirmados: —</p><p id="secoes">Seções totalizadas: —</p><p id="cobertura" class="nota"></p></div>
 <button type="button" onclick="go()">Atualizar tela</button><label for="busca" style="display:block;margin-top:16px">Buscar município</label><input id="busca" type="search" placeholder="Ex.: Ibiporã" oninput="filtrar()"><div class="wrap"><table><thead><tr>
 <th>Município</th><th>Última tentativa</th><th>HTTP</th><th>Votos confirmados</th><th>Situação do dado</th><th>Último dado válido</th><th>Atualização do TSE</th><th>Seções totalizadas</th><th>Seções apuradas</th><th>Votos válidos</th><th>Apuração</th>
 </tr></thead><tbody id="tb"></tbody></table></div>
@@ -43,6 +43,7 @@ function render(d){
  document.querySelector('#apuracao').textContent=phases[summary.apuracao]||'Situação não informada';
  document.querySelector('#soma').textContent='Votos confirmados: '+(summary.soma_ultimos_dados==null?'—':Number(summary.soma_ultimos_dados).toLocaleString('pt-BR'));
  document.querySelector('#cobertura').textContent='Soma dos últimos dados válidos de '+(summary.municipios_com_votos||0)+'/50 municípios. '+(summary.total_atual_completo?'Todos atualizados nesta passagem.':'Cobertura incompleta ou dados preservados: a soma pode reunir horários diferentes.');
+ document.querySelector('#secoes').textContent=summary.secoes_cobertura_completa?'Seções totalizadas: '+Number(summary.secoes_totalizadas).toLocaleString('pt-BR')+' de '+Number(summary.secoes_total).toLocaleString('pt-BR'):'Seções totalizadas: — (cobertura incompleta: '+(summary.municipios_com_secoes||0)+'/50 municípios)';
  const status=document.querySelector('#status');
  const absent=(d.municipios||[]).some(x=>x.estado_tentativa==='CANDIDATO_AUSENTE_OFICIAL');
  status.className=s.bloqueada||d.alarme_desatualizacao||worker.erro||absent?'alerta':'';
@@ -50,7 +51,9 @@ function render(d){
  (s.bloqueada?'Ciclo bloqueado; dados anteriores preservados.':(s.municipios_atualizados||[]).length+' municípios com votos atualizados.')+
  (worker.em_coleta?' Coleta em andamento.':'')+(worker.erro?' Erro de coleta: '+worker.erro:'')+(worker.bloqueios_consecutivos?' Acesso bloqueado pelo TSE; nova tentativa após '+date(worker.proxima_tentativa_epoch*1000)+'.':'');
  const tb=document.querySelector('#tb');tb.replaceChildren();
- for(const x of d.municipios){
+ const ordered=[...d.municipios];
+ if(summary.apuracao==='PARCIAL'||summary.apuracao==='FINAL')ordered.sort((a,b)=>(b.votos??-1)-(a.votos??-1)||a.municipio.localeCompare(b.municipio,'pt-BR'));
+ for(const x of ordered){
   const tr=document.createElement('tr');if(x.preservado)tr.className='preservado';
   const state=x.votos==null?'Sem dado válido':x.desatualizado?'DADO ANTIGO':x.preservado?'Preservado':'Atualizado';
   tr.append(td(x.municipio),td(labels[x.estado_tentativa]||x.estado_tentativa),td(x.http),

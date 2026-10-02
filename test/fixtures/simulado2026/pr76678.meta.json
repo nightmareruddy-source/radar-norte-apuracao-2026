@@ -1,0 +1,25 @@
+{
+  "url": "https://resultados-sim.tse.jus.br/simulado/simulado2026/ele2026/21272/dados/pr/pr76678-c0007-e021272-u.json",
+  "http": 200,
+  "coletado_em": "2026-10-02T03:41:24.047473+00:00",
+  "headers": {
+    "Last-Modified": "Tue, 29 Sep 2026 19:36:42 GMT",
+    "ETag": "\"4e283e2ee65abbd09a3ae96261f0cee0\"",
+    "x-amz-request-id": "tx00000a2a043a804f53a90-006abc1352-173626b-default",
+    "X-RateLimit-Limit": "2000, 2000;w=1",
+    "X-RateLimit-Remaining": "1995",
+    "X-RateLimit-Reset": "1",
+    "Vary": "Accept-Encoding",
+    "Cache-Control": "max-age=60",
+    "Expires": "Fri, 02 Oct 2026 03:42:24 GMT",
+    "Date": "Fri, 02 Oct 2026 03:41:24 GMT",
+    "Transfer-Encoding": "chunked",
+    "Connection": "close",
+    "Alt-Svc": "h3=\":443\"; ma=93600",
+    "Content-Type": "application/json",
+    "Strict-Transport-Security": "max-age=63072000 ; includeSubDomains ; preload",
+    "Akamai-GRN": "0.1c293417.1790912483.13ef82e6",
+    "cdn-cache-status": "Miss from child, RefreshHit from parent"
+  },
+  "sha256": "597432298ad7f42e0f72870c8e33efc185347abd10c70d8342ebbce2181c07c4"
+}

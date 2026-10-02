@@ -263,7 +263,7 @@ def api_state():
         metrics=bundle.get('metrics',{})
         worker_path=DATA/'worker.json'
         worker=json.loads(worker_path.read_text()) if worker_path.exists() else {}
-        stale_limit=2*(REFRESH+int(CFG.get('cycle_budget_seconds',600)))
+        stale_limit=900
         def age(stamp):
             try:return max(0,time.time()-datetime.fromisoformat(stamp).timestamp())
             except (ValueError,TypeError):return None
@@ -287,6 +287,8 @@ def api_state():
         states=[r.get('apuracao','INDEFINIDO') for r in display]
         aggregate='NAO_INICIADA' if all(x=='NAO_INICIADA' for x in states) else 'FINAL' if allfresh and all(x=='FINAL' for x in states) else 'PARCIAL'
         if not valid: aggregate='SEM_DADOS'
+        sections=[r for r in display if r.get('secoes_total') is not None and r.get('secoes_totalizadas') is not None]
+        sections_complete=len(sections)==len(display)
         # Failed attempts must never reset the age of validated votes.
         stale=age(status.get('timestamp'))
         stale_alarm=(not valid and time.time()-STARTED>stale_limit) or any(r['desatualizado'] for r in display) or (stale>stale_limit if stale is not None else time.time()-STARTED>stale_limit)
@@ -297,6 +299,9 @@ def api_state():
                 'alarme_desatualizacao':stale_alarm,
                 'limite_atraso_segundos':stale_limit,
                 'resumo':{'soma_ultimos_dados':sum(int(r['votos']) for r in valid) if valid else None,
+                          'secoes_total':sum(r['secoes_total'] for r in sections) if sections_complete else None,
+                          'secoes_totalizadas':sum(r['secoes_totalizadas'] for r in sections) if sections_complete else None,
+                          'municipios_com_secoes':len(sections),'secoes_cobertura_completa':sections_complete,
                           'municipios_com_votos':len(valid),'municipios_atuais':sum(r['votos'] is not None and not r['preservado'] and not r['desatualizado'] for r in display),
                           'total_atual_completo':allfresh,'apuracao':aggregate}}
 
@@ -334,20 +339,27 @@ def worker_loop(mock,refresh):
     path=DATA/'worker.json'
     state=json.loads(path.read_text()) if path.exists() else {}
     streak=int(state.get('bloqueios_consecutivos',0))
+    # Start immediately unless a persisted access-block cooldown is still active.
+    # Restarting must never bypass a 403/429 backoff.
+    if not streak: state['proxima_tentativa_epoch']=0
     while True:
         remaining=max(0,float(state.get('proxima_tentativa_epoch',0))-time.time())
         if remaining>0:
             time.sleep(min(60,remaining)); continue
-        state={'em_coleta':True,'inicio':now(),'bloqueios_consecutivos':streak}
+        started_epoch=time.time()
+        state={'em_coleta':True,'inicio':now(),'inicio_epoch':started_epoch,
+               'intervalo_segundos':max(10,refresh),'bloqueios_consecutivos':streak}
         atomic_json(path,state)
         try:
             rows=cycle(mock)
             delay,streak=next_delay(rows,streak,refresh)
+            # No overlap or catch-up burst: long cycles wait at least 10 seconds.
+            deadline=time.time()+delay if streak else max(started_epoch+delay,time.time()+10)
             state.update(erro=None)
         except Exception as exc:
-            delay=max(60,refresh);state.update(erro=type(exc).__name__+': '+str(exc))
+            delay=max(60,refresh);deadline=time.time()+delay;state.update(erro=type(exc).__name__+': '+str(exc))
             print('coleta:',exc,flush=True)
-        state.update(em_coleta=False,fim=now(),proxima_tentativa_epoch=time.time()+delay,bloqueios_consecutivos=streak)
+        state.update(em_coleta=False,fim=now(),proxima_tentativa_epoch=deadline,bloqueios_consecutivos=streak)
         atomic_json(path,state)
 
 def serve(host,port,mock,refresh):
