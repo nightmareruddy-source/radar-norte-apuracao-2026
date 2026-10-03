@@ -187,7 +187,7 @@ class PainelTests(unittest.TestCase):
 
     def test_backoff(self):
         streak=0
-        for expected in (600,1200,2400,3600,3600):
+        for expected in (600,1200,1200,1200,1200):
             delay,streak=radar.next_delay([{'estado':'HTTP_429'}],streak,300)
             self.assertEqual(delay,expected)
         self.assertEqual(radar.next_delay([{'estado':'DADO_VALIDO'}],streak,300),(300,0))
@@ -294,3 +294,78 @@ class WorkerScheduleTests(unittest.TestCase):
 
 # Include authentic simulation regression in Render's existing build test gate.
 from test_simulado2026 import Simulado2026Tests
+
+class TravamentoTests(unittest.TestCase):
+    setUp=PainelTests.setUp
+    tearDown=PainelTests.tearDown
+    rows=PainelTests.rows
+    payload=PainelTests.payload
+    baseline=PainelTests.baseline
+    def test_worker_stuck_api_remains_responsive_and_alarm_ages(self):
+        self.baseline()
+        entered=threading.Event();release=threading.Event()
+        class Stop(BaseException): pass
+        def stuck(mock):
+            entered.set();release.wait(5);raise Stop()
+        def run():
+            try:radar.worker_loop(False,300)
+            except Stop:pass
+        server=ThreadingHTTPServer(('127.0.0.1',0),radar.H)
+        serving=threading.Thread(target=server.serve_forever,daemon=True);serving.start()
+        worker=threading.Thread(target=run,daemon=True)
+        try:
+            with patch.object(radar,'cycle',side_effect=stuck):
+                worker.start();self.assertTrue(entered.wait(2))
+                url=f'http://127.0.0.1:{server.server_port}/api/latest'
+                with urllib.request.urlopen(url,timeout=2) as response:
+                    first=json.load(response)
+                self.assertTrue(first['worker']['em_coleta'])
+                self.assertFalse(first['alarme_desatualizacao'])
+                epoch=first['worker']['inicio_epoch']
+                with patch.object(radar.time,'time',return_value=epoch+901):
+                    with urllib.request.urlopen(url,timeout=2) as response:
+                        second=json.load(response)
+                self.assertTrue(second['worker']['em_coleta'])
+                self.assertTrue(second['coleta_prolongada'])
+                self.assertTrue(second['alarme_desatualizacao'])
+                self.assertNotEqual(first['verificado_em'],second['verificado_em'])
+                self.assertEqual(first['rows'],second['rows'])
+        finally:
+            release.set();worker.join(2);server.shutdown();server.server_close();serving.join()
+
+    def test_total_timeout_during_slow_body(self):
+        import time
+        from transporte_tse import request_bytes
+        class Slow(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200);self.send_header('Content-Length','10000');self.end_headers()
+                try:
+                    for _ in range(100):
+                        self.wfile.write(b'x');self.wfile.flush();time.sleep(.05)
+                except (BrokenPipeError,ConnectionResetError):pass
+            def log_message(self,*args):pass
+        server=ThreadingHTTPServer(('127.0.0.1',0),Slow)
+        serving=threading.Thread(target=server.serve_forever,daemon=True);serving.start()
+        try:
+            start=time.monotonic()
+            with self.assertRaises(TimeoutError):request_bytes(f'http://127.0.0.1:{server.server_port}/',.3)
+            self.assertLess(time.monotonic()-start,1.5)
+        finally:server.shutdown();server.server_close();serving.join()
+
+    def test_timeout_preserves_previous_votes(self):
+        self.baseline()
+        with patch.object(radar,'request_bytes',side_effect=TimeoutError('TEMPO_LIMITE_TOTAL_10s')):
+            status,payload,error=radar.fetch('https://example.invalid')
+        self.assertEqual(status,0);self.assertIsNone(payload)
+        self.assertIn('TEMPO_LIMITE_TOTAL',error)
+        radar.save([radar.parse_one(n,c,None,status,error) for n,c in radar.municipalities()])
+        self.assertTrue(all(x['votos']==9 for x in radar.api_state()['municipios']))
+
+    def test_block_status_survives_body_timeout(self):
+        import subprocess
+        from transporte_tse import request_bytes
+        error=subprocess.TimeoutExpired('python',10,stderr=b'{"status":403,"headers":{}}')
+        with patch('transporte_tse.subprocess.run',side_effect=error):
+            status,_,message=radar.fetch('https://example.invalid')
+        self.assertEqual(status,403)
+        self.assertIn('TEMPO_LIMITE_CORPO',message)

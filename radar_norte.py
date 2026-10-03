@@ -4,6 +4,7 @@ from coletor_actions import parse_result, atomic_json
 from datetime import datetime, timezone
 from contextlib import closing
 from evidencias import salvar_se_mudou
+from transporte_tse import request_bytes
 from urllib.parse import urlsplit
 import re
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -54,16 +55,15 @@ def record_response(url,status,raw,headers,started,error=''):
 
 def fetch(url,timeout=10):
     started=now()
-    req=urllib.request.Request(url,headers={'User-Agent':'RadarNorte2026/1.0','Accept':'application/json'})
     try:
-        with urllib.request.urlopen(req,timeout=timeout) as r:
-            raw=r.read()
-            record_response(url,r.status,raw,r.headers,started)
-            try: return r.status,json.loads(raw.decode('utf-8-sig')),''
-            except (ValueError,UnicodeError): return r.status,None,'JSON_INVALIDO'
+        status,raw,headers=request_bytes(url,timeout)
+        record_response(url,status,raw,headers,started)
+        if status!=200: return status,None,f'HTTP {status}'
+        try: return status,json.loads(raw.decode('utf-8-sig')),''
+        except (ValueError,UnicodeError): return status,None,'JSON_INVALIDO'
     except urllib.error.HTTPError as e:
-        raw=e.read();record_response(url,e.code,raw,e.headers,started,str(e))
-        return e.code,None,f'HTTP {e.code}'
+        record_response(url,e.code,b'',e.headers,started,str(e))
+        return e.code,None,str(e)
     except Exception as e:
         error=f'{type(e).__name__}: {e}'
         record_response(url,0,b'',{},started,error)
@@ -264,9 +264,12 @@ def api_state():
         worker_path=DATA/'worker.json'
         worker=json.loads(worker_path.read_text()) if worker_path.exists() else {}
         stale_limit=900
+        checked_at=time.time()
         def age(stamp):
-            try:return max(0,time.time()-datetime.fromisoformat(stamp).timestamp())
+            try:return max(0,checked_at-datetime.fromisoformat(stamp).timestamp())
             except (ValueError,TypeError):return None
+        cycle_age=age(worker.get('inicio')) if worker.get('em_coleta') else None
+        worker_stalled=cycle_age is not None and cycle_age>stale_limit
         display=[]
         for name,code in municipalities():
             attempt=attempts.get(code,{})
@@ -291,13 +294,16 @@ def api_state():
         sections_complete=len(sections)==len(display)
         # Failed attempts must never reset the age of validated votes.
         stale=age(status.get('timestamp'))
-        stale_alarm=(not valid and time.time()-STARTED>stale_limit) or any(r['desatualizado'] for r in display) or (stale>stale_limit if stale is not None else time.time()-STARTED>stale_limit)
+        stale_alarm=worker_stalled or (not valid and time.time()-STARTED>stale_limit) or any(r['desatualizado'] for r in display) or (stale>stale_limit if stale is not None else time.time()-STARTED>stale_limit)
         return {'timestamp':status.get('timestamp'),'rows':valid,'tentativas':list(attempts.values()),
                 'coleta':status,'municipios':display,'worker':worker,
                 'ambiente':'DEMONSTRACAO' if MOCK_MODE else CFG['environment'],
                 'eleicao':CFG['election_code'],'numero':CFG['candidate_number'],
                 'alarme_desatualizacao':stale_alarm,
                 'limite_atraso_segundos':stale_limit,
+                'verificado_em':datetime.fromtimestamp(checked_at,timezone.utc).isoformat(),
+                'coleta_prolongada':worker_stalled,'duracao_coleta_segundos':cycle_age,
+                'timeout_requisicao_segundos':10,'limite_espera_bloqueio_segundos':1200,
                 'resumo':{'soma_ultimos_dados':sum(int(r['votos']) for r in valid) if valid else None,
                           'secoes_total':sum(r['secoes_total'] for r in sections) if sections_complete else None,
                           'secoes_totalizadas':sum(r['secoes_totalizadas'] for r in sections) if sections_complete else None,
@@ -333,7 +339,7 @@ class H(BaseHTTPRequestHandler):
 def next_delay(rows,streak,refresh):
     blocked=any(r['estado'] in ('HTTP_403','HTTP_429') for r in rows)
     streak=streak+1 if blocked else 0
-    return (min(3600,600*2**min(streak-1,3)) if blocked else max(10,refresh)),streak
+    return (min(1200,600*2**min(streak-1,1)) if blocked else max(10,refresh)),streak
 
 def worker_loop(mock,refresh):
     path=DATA/'worker.json'
@@ -342,6 +348,9 @@ def worker_loop(mock,refresh):
     # Start immediately unless a persisted access-block cooldown is still active.
     # Restarting must never bypass a 403/429 backoff.
     if not streak: state['proxima_tentativa_epoch']=0
+    elif state.get('fim'):
+        finished=datetime.fromisoformat(state['fim']).timestamp()
+        state['proxima_tentativa_epoch']=min(float(state.get('proxima_tentativa_epoch',0)),finished+1200)
     while True:
         remaining=max(0,float(state.get('proxima_tentativa_epoch',0))-time.time())
         if remaining>0:
@@ -361,6 +370,7 @@ def worker_loop(mock,refresh):
             print('coleta:',exc,flush=True)
         state.update(em_coleta=False,fim=now(),proxima_tentativa_epoch=deadline,bloqueios_consecutivos=streak)
         atomic_json(path,state)
+        print('ciclo_concluido',json.dumps(state,ensure_ascii=False),flush=True)
 
 def serve(host,port,mock,refresh):
     global REFRESH

@@ -12,6 +12,7 @@ import unicodedata
 import urllib.error
 import urllib.request
 from collections import Counter
+from transporte_tse import request_bytes
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -28,10 +29,8 @@ def normalize(value):
 
 
 def request(url, timeout=25):
-    req = urllib.request.Request(url, headers={
-        'User-Agent': 'RadarNorte-Auditoria/2.0', 'Accept': 'application/json'})
-    with urllib.request.urlopen(req, timeout=timeout) as response:
-        return response.status, response.read()
+    status,body,_=request_bytes(url,timeout)
+    return status,body
 
 
 def parse_result(body, code, number, election=None):
